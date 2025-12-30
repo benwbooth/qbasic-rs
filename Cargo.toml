@@ -1,0 +1,9 @@
+[package]
+name = "qbasic-rs"
+version = "0.1.0"
+edition = "2021"
+description = "A faithful simulation of the MS-DOS QBasic IDE"
+
+[dependencies]
+libc = "0.2"
+arboard = "3"
