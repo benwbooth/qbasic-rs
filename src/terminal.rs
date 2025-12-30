@@ -104,6 +104,8 @@ pub enum MouseButton {
     Right,
     WheelUp,
     WheelDown,
+    WheelLeft,
+    WheelRight,
     None, // No button pressed (for motion-only events)
 }
 
@@ -115,6 +117,7 @@ pub struct MouseEvent {
     pub col: u16,
     pub pressed: bool, // true for press, false for release
     pub motion: bool,  // true if this is a motion event (drag)
+    pub shift: bool,   // true if shift was held
 }
 
 /// Key events including special keys
@@ -339,27 +342,99 @@ impl Terminal {
     }
 
     /// Read key and return both the parsed key and raw bytes (for debugging)
+    /// Returns one event at a time, buffering any extra data for subsequent calls
     pub fn read_key_raw(&self) -> io::Result<(Option<Key>, Vec<u8>)> {
-        let mut buf = [0u8; 32];
-        let mut stdin = io::stdin();
-
-        let n = stdin.read(&mut buf)?;
-        if n == 0 {
-            return Ok((None, vec![]));
+        use std::cell::RefCell;
+        thread_local! {
+            static INPUT_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
         }
 
-        // If we got ESC, try to read more bytes (for escape sequences)
-        let mut total = n;
-        if buf[0] == 0x1b && n == 1 {
-            // Wait a bit and try to read more
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            if let Ok(more) = stdin.read(&mut buf[n..]) {
-                total += more;
+        INPUT_BUFFER.with(|buf_cell| {
+            let mut buffer = buf_cell.borrow_mut();
+
+            // If buffer is empty, read more data
+            if buffer.is_empty() {
+                let mut read_buf = [0u8; 256];
+                let mut stdin = io::stdin();
+                let n = stdin.read(&mut read_buf)?;
+                if n == 0 {
+                    return Ok((None, vec![]));
+                }
+                buffer.extend_from_slice(&read_buf[..n]);
+
+                // If we got just ESC, try to read more bytes (for escape sequences)
+                if buffer.len() == 1 && buffer[0] == 0x1b {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    if let Ok(more) = stdin.read(&mut read_buf) {
+                        if more > 0 {
+                            buffer.extend_from_slice(&read_buf[..more]);
+                        }
+                    }
+                }
+            }
+
+            if buffer.is_empty() {
+                return Ok((None, vec![]));
+            }
+
+            // Find the end of the first complete event
+            let event_len = Self::find_event_boundary(&buffer);
+            let event_bytes: Vec<u8> = buffer.drain(..event_len).collect();
+
+            Ok((Some(Self::parse_key(&event_bytes)), event_bytes))
+        })
+    }
+
+    /// Find the boundary of the first complete input event in the buffer
+    fn find_event_boundary(buf: &[u8]) -> usize {
+        if buf.is_empty() {
+            return 0;
+        }
+
+        // SGR mouse event: \x1b[<...M or \x1b[<...m
+        if buf.len() >= 3 && buf[0] == 0x1b && buf[1] == b'[' && buf[2] == b'<' {
+            // Find the terminating M or m
+            for i in 3..buf.len() {
+                if buf[i] == b'M' || buf[i] == b'm' {
+                    return i + 1;
+                }
+            }
+            // Incomplete sequence - return all we have
+            return buf.len();
+        }
+
+        // Other escape sequences: \x1b[...~ or \x1b[A-Z or \x1bO...
+        if buf.len() >= 2 && buf[0] == 0x1b {
+            if buf[1] == b'[' {
+                // CSI sequence - find terminator (letter or ~)
+                for i in 2..buf.len() {
+                    if buf[i].is_ascii_alphabetic() || buf[i] == b'~' {
+                        return i + 1;
+                    }
+                }
+                return buf.len();
+            } else if buf[1] == b'O' {
+                // SS3 sequence (F1-F4)
+                if buf.len() >= 3 {
+                    return 3;
+                }
+                return buf.len();
+            } else {
+                // Alt+key
+                return 2;
             }
         }
 
-        let bytes = buf[..total].to_vec();
-        Ok((Some(Self::parse_key(&buf[..total])), bytes))
+        // UTF-8 multi-byte character
+        if buf[0] >= 0xC0 {
+            let expected_len = if buf[0] < 0xE0 { 2 }
+                else if buf[0] < 0xF0 { 3 }
+                else { 4 };
+            return expected_len.min(buf.len());
+        }
+
+        // Single byte
+        1
     }
 
     /// Parse raw bytes into a Key
@@ -505,15 +580,18 @@ impl Terminal {
             _ => return None,
         };
 
-        // Check for motion (bit 5 = 32)
-        let motion = (cb & 32) != 0;
+        // Check for modifiers
+        let shift = (cb & 4) != 0;  // bit 2 = shift
+        let motion = (cb & 32) != 0; // bit 5 = motion
 
-        // Check for wheel events
+        // Check for wheel events (bit 6 = 64)
         let button = if cb & 64 != 0 {
-            if cb & 1 != 0 {
-                MouseButton::WheelDown
-            } else {
-                MouseButton::WheelUp
+            match cb & 0b11 {
+                0 => MouseButton::WheelUp,
+                1 => MouseButton::WheelDown,
+                2 => MouseButton::WheelLeft,
+                3 => MouseButton::WheelRight,
+                _ => button,
             }
         } else {
             button
@@ -525,6 +603,7 @@ impl Terminal {
             col,
             pressed,
             motion,
+            shift,
         })
     }
 

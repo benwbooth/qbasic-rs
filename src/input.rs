@@ -17,6 +17,8 @@ pub enum InputEvent {
     /// Mouse wheel scroll
     ScrollUp { row: u16, col: u16 },
     ScrollDown { row: u16, col: u16 },
+    ScrollLeft { row: u16, col: u16 },
+    ScrollRight { row: u16, col: u16 },
     /// Regular character input
     Char(char),
     /// Navigation keys
@@ -185,7 +187,7 @@ impl From<Key> for InputEvent {
             Key::Ctrl('z') => InputEvent::CtrlZ,
             Key::Ctrl('y') => InputEvent::CtrlY,
             Key::Ctrl('q') => InputEvent::CtrlQ,
-            Key::Mouse(MouseEvent { button: MouseButton::Left, row, col, pressed: true, motion: false }) => {
+            Key::Mouse(MouseEvent { button: MouseButton::Left, row, col, pressed: true, motion: false, .. }) => {
                 InputEvent::MouseClick { row, col }
             }
             Key::Mouse(MouseEvent { button: MouseButton::Left, row, col, pressed: false, .. }) => {
@@ -194,11 +196,25 @@ impl From<Key> for InputEvent {
             Key::Mouse(MouseEvent { button: MouseButton::Left, row, col, motion: true, .. }) => {
                 InputEvent::MouseDrag { row, col }
             }
+            Key::Mouse(MouseEvent { button: MouseButton::WheelUp, row, col, shift: true, .. }) => {
+                // Shift+ScrollUp = scroll left (for terminals without native horizontal scroll)
+                InputEvent::ScrollLeft { row, col }
+            }
+            Key::Mouse(MouseEvent { button: MouseButton::WheelDown, row, col, shift: true, .. }) => {
+                // Shift+ScrollDown = scroll right (for terminals without native horizontal scroll)
+                InputEvent::ScrollRight { row, col }
+            }
             Key::Mouse(MouseEvent { button: MouseButton::WheelUp, row, col, .. }) => {
                 InputEvent::ScrollUp { row, col }
             }
             Key::Mouse(MouseEvent { button: MouseButton::WheelDown, row, col, .. }) => {
                 InputEvent::ScrollDown { row, col }
+            }
+            Key::Mouse(MouseEvent { button: MouseButton::WheelLeft, row, col, .. }) => {
+                InputEvent::ScrollLeft { row, col }
+            }
+            Key::Mouse(MouseEvent { button: MouseButton::WheelRight, row, col, .. }) => {
+                InputEvent::ScrollRight { row, col }
             }
             Key::Mouse(MouseEvent { button: MouseButton::None, row, col, motion: true, .. }) => {
                 InputEvent::MouseMove { row, col }

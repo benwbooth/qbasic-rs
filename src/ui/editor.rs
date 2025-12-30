@@ -1927,6 +1927,16 @@ impl Editor {
                 self.scroll_row += 3;
                 true
             }
+            InputEvent::ScrollLeft { .. } => {
+                // Scroll left 6 columns
+                self.scroll_col = self.scroll_col.saturating_sub(6);
+                true
+            }
+            InputEvent::ScrollRight { .. } => {
+                // Scroll right 6 columns
+                self.scroll_col += 6;
+                true
+            }
             InputEvent::Escape => {
                 // Clear keyboard select mode and selection
                 if self.keyboard_select_mode || self.has_selection() {

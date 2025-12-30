@@ -75,11 +75,14 @@ impl Menu {
             .unwrap_or(10);
         let max_shortcut = self.items.iter()
             .filter_map(|i| i.shortcut.as_ref())
+            .filter(|s| !s.is_empty())
             .map(|s| s.len())
             .max()
             .unwrap_or(0);
 
-        (max_label + max_shortcut + 4).max(self.title.len() + 4) as u16
+        // 4 for borders + 2 for label padding + 2 for gap between label and shortcut
+        let shortcut_space = if max_shortcut > 0 { max_shortcut + 2 } else { 0 };
+        (max_label + shortcut_space + 6).max(self.title.len() + 4) as u16
     }
 }
 
@@ -215,7 +218,7 @@ impl MenuBar {
         let y = 2u16;
 
         // Draw box
-        screen.draw_box(y, x, width, height, Color::Black, Color::White);
+        screen.draw_box(y, x, width, height, Color::Black, Color::LightGray);
 
         // Draw shadow
         screen.draw_shadow(y, x, width, height);
@@ -227,32 +230,39 @@ impl MenuBar {
 
             if item.separator {
                 // Draw separator
-                screen.set(row, x, '├', Color::Black, Color::White);
+                screen.set(row, x, '├', Color::Black, Color::LightGray);
                 for c in 1..width - 1 {
-                    screen.set(row, x + c, '─', Color::Black, Color::White);
+                    screen.set(row, x + c, '─', Color::Black, Color::LightGray);
                 }
-                screen.set(row, x + width - 1, '┤', Color::Black, Color::White);
+                screen.set(row, x + width - 1, '┤', Color::Black, Color::LightGray);
             } else {
                 let fg = if is_selected { Color::White } else { Color::Black };
-                let bg = if is_selected { Color::Black } else { Color::White };
+                let bg = if is_selected { Color::Black } else { Color::LightGray };
 
                 // Clear the row
                 for c in 1..width - 1 {
                     screen.set(row, x + c, ' ', fg, bg);
                 }
 
-                // Item label (with hotkey)
+                // Item label with first letter as hotkey (highlighted in white)
                 let mut label_x = x + 2;
-                for ch in item.label.chars() {
-                    screen.set(row, label_x, ch, fg, bg);
+                for (j, ch) in item.label.chars().enumerate() {
+                    let ch_fg = if j == 0 {
+                        Color::White
+                    } else {
+                        fg
+                    };
+                    screen.set(row, label_x, ch, ch_fg, bg);
                     label_x += 1;
                 }
 
-                // Shortcut (right-aligned)
+                // Shortcut (right-aligned) - same color as label
                 if let Some(shortcut) = &item.shortcut {
-                    let shortcut_x = x + width - 2 - shortcut.len() as u16;
-                    for (j, ch) in shortcut.chars().enumerate() {
-                        screen.set(row, shortcut_x + j as u16, ch, Color::DarkGray, bg);
+                    if !shortcut.is_empty() {
+                        let shortcut_x = x + width - 2 - shortcut.len() as u16;
+                        for (j, ch) in shortcut.chars().enumerate() {
+                            screen.set(row, shortcut_x + j as u16, ch, fg, bg);
+                        }
                     }
                 }
             }

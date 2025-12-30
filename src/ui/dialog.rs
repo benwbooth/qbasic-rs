@@ -43,17 +43,10 @@ impl Dialog {
         // Draw single-line box
         screen.draw_box(y, x, width, height, Color::Black, Color::LightGray);
 
-        // Title bar - blue background with white text (QBasic style)
-        screen.fill(y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
+        // Title bar - gray background with black text, centered
         let title_str = format!(" {} ", title);
         let title_x = x + (width.saturating_sub(title_str.len() as u16)) / 2;
-        screen.write_str(y, title_x, &title_str, Color::White, Color::Blue);
-
-        // Window controls at top-right
-        if width >= 10 {
-            screen.write_str(y, x + width - 7, "[↑]", Color::White, Color::Blue);
-            screen.write_str(y, x + width - 3, "[X]", Color::White, Color::Blue);
-        }
+        screen.write_str(y, title_x, &title_str, Color::Black, Color::LightGray);
     }
 
     /// Legacy helper for dialogs that don't use state positioning yet
@@ -208,21 +201,11 @@ impl Dialog {
         // Draw border
         screen.draw_box(y, x, width, height, Color::Black, Color::LightGray);
 
-        // Draw title bar elements (QBasic uses blue title bar with white text)
+        // Draw title bar (centered title, gray background)
         if let Some(rect) = layout.get("title_bar") {
-            // Fill title bar with blue
-            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
             let title_str = format!(" {} ", title);
             let title_x = rect.x + (rect.width.saturating_sub(title_str.len() as u16)) / 2;
-            screen.write_str(rect.y, title_x, &title_str, Color::White, Color::Blue);
-        }
-        if let Some(rect) = layout.get("maximize") {
-            // Show ↓ when maximized (to restore), ↑ when normal (to maximize)
-            let icon = if state.dialog_saved_bounds.is_some() { "[↓]" } else { "[↑]" };
-            screen.write_str(rect.y, rect.x, icon, Color::White, Color::Blue);
-        }
-        if let Some(rect) = layout.get("close") {
-            screen.write_str(rect.y, rect.x, "[X]", Color::White, Color::Blue);
+            screen.write_str(rect.y, title_x, &title_str, Color::Black, Color::LightGray);
         }
 
         // Get current directory from state
@@ -237,7 +220,7 @@ impl Dialog {
             screen.write_str(label_rect.y, label_rect.x, "File Name:", fg, bg);
         }
         if let Some(field_rect) = layout.get("filename_field") {
-            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::LightGray) };
             screen.fill(field_rect.y, field_rect.x, field_rect.width, 1, ' ', fg, bg);
             let display = if state.dialog_filename.is_empty() { "*.BAS" } else { &state.dialog_filename };
             let truncated: String = display.chars().take(field_rect.width as usize).collect();
@@ -257,7 +240,7 @@ impl Dialog {
             screen.write_str(label_rect.y, label_rect.x, "Directory:", fg, bg);
         }
         if let Some(field_rect) = layout.get("directory_field") {
-            let (fg, bg) = if current_field == 1 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            let (fg, bg) = if current_field == 1 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::LightGray) };
             screen.fill(field_rect.y, field_rect.x, field_rect.width, 1, ' ', fg, bg);
             let max_len = field_rect.width as usize;
             let dir_display = if cwd.len() > max_len { &cwd[cwd.len()-max_len..] } else { &cwd };
@@ -271,7 +254,7 @@ impl Dialog {
         }
         if let Some(list_rect) = layout.get("files_list") {
             let box_fg = if current_field == 2 { Color::Black } else { Color::Black };
-            let box_bg = if current_field == 2 { Color::Cyan } else { Color::White };
+            let box_bg = if current_field == 2 { Color::Cyan } else { Color::LightGray };
             screen.draw_box(list_rect.y, list_rect.x, list_rect.width, list_rect.height, box_fg, box_bg);
             let max_items = list_rect.height.saturating_sub(2) as usize;
             let item_width = list_rect.width.saturating_sub(2) as usize;
@@ -279,7 +262,7 @@ impl Dialog {
             for (i, file) in state.dialog_files.iter().take(max_items).enumerate() {
                 let is_selected = i == state.dialog_file_index;
                 let fg = if is_selected { Color::White } else { Color::Black };
-                let bg = if is_selected { Color::Cyan } else { Color::White };
+                let bg = if is_selected { Color::Cyan } else { Color::LightGray };
                 let display: String = if file.len() > item_width {
                     file[..item_width].to_string()
                 } else {
@@ -296,7 +279,7 @@ impl Dialog {
         }
         if let Some(list_rect) = layout.get("dirs_list") {
             let box_fg = if current_field == 3 { Color::Black } else { Color::Black };
-            let box_bg = if current_field == 3 { Color::Cyan } else { Color::White };
+            let box_bg = if current_field == 3 { Color::Cyan } else { Color::LightGray };
             screen.draw_box(list_rect.y, list_rect.x, list_rect.width, list_rect.height, box_fg, box_bg);
             let max_items = list_rect.height.saturating_sub(2) as usize;
             let item_width = list_rect.width.saturating_sub(2) as usize;
@@ -304,7 +287,7 @@ impl Dialog {
             for (i, dir) in state.dialog_dirs.iter().take(max_items).enumerate() {
                 let is_selected = i == state.dialog_dir_index;
                 let fg = if is_selected { Color::White } else { Color::Black };
-                let bg = if is_selected { Color::Cyan } else { Color::White };
+                let bg = if is_selected { Color::Cyan } else { Color::LightGray };
                 let display_name = format!("[{}]", dir);
                 let display: String = if display_name.len() > item_width {
                     display_name[..item_width].to_string()
@@ -344,10 +327,10 @@ impl Dialog {
 
         // Title bar (blue with white text)
         if let Some(rect) = layout.get("title_bar") {
-            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
+            // Title is just text on gray background, no fill needed
             let title = " Find ";
             let title_x = rect.x + (rect.width.saturating_sub(title.len() as u16)) / 2;
-            screen.write_str(rect.y, title_x, title, Color::White, Color::Blue);
+            screen.write_str(rect.y, title_x, title, Color::Black, Color::LightGray);
         }
 
         // Fields: 0=search, 1=case checkbox, 2=word checkbox, 3=Find, 4=Cancel, 5=Help
@@ -361,7 +344,7 @@ impl Dialog {
 
         // Find field
         if let Some(rect) = layout.get("find_field") {
-            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::LightGray) };
             screen.fill(rect.y, rect.x, rect.width, 1, ' ', fg, bg);
 
             let text = &state.dialog_find_text;
@@ -420,10 +403,10 @@ impl Dialog {
 
         // Title bar (blue with white text)
         if let Some(rect) = layout.get("title_bar") {
-            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
+            // Title is just text on gray background, no fill needed
             let title = " Change ";
             let title_x = rect.x + (rect.width.saturating_sub(title.len() as u16)) / 2;
-            screen.write_str(rect.y, title_x, title, Color::White, Color::Blue);
+            screen.write_str(rect.y, title_x, title, Color::Black, Color::LightGray);
         }
 
         // Fields: 0=find, 1=replace, 2=case, 3=word, 4=Find&Verify, 5=ChangeAll, 6=Cancel
@@ -437,7 +420,7 @@ impl Dialog {
 
         // Find field
         if let Some(rect) = layout.get("find_field") {
-            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::LightGray) };
             screen.fill(rect.y, rect.x, rect.width, 1, ' ', fg, bg);
 
             let text = &state.dialog_find_text;
@@ -460,7 +443,7 @@ impl Dialog {
 
         // Replace field
         if let Some(rect) = layout.get("replace_field") {
-            let (fg, bg) = if current_field == 1 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            let (fg, bg) = if current_field == 1 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::LightGray) };
             screen.fill(rect.y, rect.x, rect.width, 1, ' ', fg, bg);
 
             let text = &state.dialog_replace_text;
@@ -521,10 +504,10 @@ impl Dialog {
 
         // Title bar (blue with white text)
         if let Some(rect) = layout.get("title_bar") {
-            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
+            // Title is just text on gray background, no fill needed
             let title = " Go To Line ";
             let title_x = rect.x + (rect.width.saturating_sub(title.len() as u16)) / 2;
-            screen.write_str(rect.y, title_x, title, Color::White, Color::Blue);
+            screen.write_str(rect.y, title_x, title, Color::Black, Color::LightGray);
         }
 
         // Fields: 0=line number, 1=OK, 2=Cancel
@@ -538,7 +521,7 @@ impl Dialog {
 
         // Line field
         if let Some(rect) = layout.get("line_field") {
-            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::LightGray) };
             screen.fill(rect.y, rect.x, rect.width, 1, ' ', fg, bg);
 
             let text = &state.dialog_goto_line;
@@ -644,10 +627,10 @@ impl Dialog {
 
         // Title bar (blue with white text)
         if let Some(rect) = layout.get("title_bar") {
-            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
+            // Title is just text on gray background, no fill needed
             let title = " Print ";
             let title_x = rect.x + (rect.width.saturating_sub(title.len() as u16)) / 2;
-            screen.write_str(rect.y, title_x, title, Color::White, Color::Blue);
+            screen.write_str(rect.y, title_x, title, Color::Black, Color::LightGray);
         }
 
         // Fields: 0=selected text, 1=current window, 2=entire program, 3=OK, 4=Cancel
@@ -694,10 +677,10 @@ impl Dialog {
 
         // Title bar (blue with white text)
         if let Some(rect) = layout.get("title_bar") {
-            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
+            // Title is just text on gray background, no fill needed
             let title = " Welcome ";
             let title_x = rect.x + (rect.width.saturating_sub(title.len() as u16)) / 2;
-            screen.write_str(rect.y, title_x, title, Color::White, Color::Blue);
+            screen.write_str(rect.y, title_x, title, Color::Black, Color::LightGray);
         }
 
         // Buttons: 0=start button, 1=exit button
@@ -753,10 +736,10 @@ impl Dialog {
 
         // Title bar (blue with white text)
         if let Some(rect) = layout.get("title_bar") {
-            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
+            // Title is just text on gray background, no fill needed
             let title_str = format!(" {} ", title);
             let title_x = rect.x + (rect.width.saturating_sub(title_str.len() as u16)) / 2;
-            screen.write_str(rect.y, title_x, &title_str, Color::White, Color::Blue);
+            screen.write_str(rect.y, title_x, &title_str, Color::Black, Color::LightGray);
         }
 
         // Fields: 0=input, 1=OK, 2=Cancel
@@ -770,7 +753,7 @@ impl Dialog {
 
         // Input field
         if let Some(rect) = layout.get("input_field") {
-            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::LightGray) };
             screen.fill(rect.y, rect.x, rect.width, 1, ' ', fg, bg);
 
             let max_chars = rect.width.saturating_sub(1) as usize;
@@ -833,10 +816,10 @@ impl Dialog {
 
         // Title bar (blue with white text)
         if let Some(rect) = layout.get("title_bar") {
-            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
+            // Title is just text on gray background, no fill needed
             let title = " Display ";
             let title_x = rect.x + (rect.width.saturating_sub(title.len() as u16)) / 2;
-            screen.write_str(rect.y, title_x, title, Color::White, Color::Blue);
+            screen.write_str(rect.y, title_x, title, Color::Black, Color::LightGray);
         }
 
         // Fields: 0=tabs, 1=scrollbars, 2=blue, 3=dark, 4=light, 5=OK, 6=Cancel
@@ -848,7 +831,7 @@ impl Dialog {
             screen.write_str(rect.y, rect.x, "Tab Stops:", fg, bg);
         }
         if let Some(rect) = layout.get("tabs_field") {
-            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::LightGray) };
             screen.fill(rect.y, rect.x, rect.width, 1, ' ', fg, bg);
             let tab_str = state.tab_stops.to_string();
             screen.write_str(rect.y, rect.x, &tab_str, fg, bg);

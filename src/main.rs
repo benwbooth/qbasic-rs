@@ -85,55 +85,68 @@ impl App {
             // Flush to terminal
             self.screen.flush(&mut self.terminal)?;
 
-            // Handle input
-            let (maybe_key, raw_bytes) = self.terminal.read_key_raw()?;
+            // Handle ALL available input events before next draw cycle
+            // This ensures scroll events and other rapid inputs are processed smoothly
+            let mut had_input = false;
+            loop {
+                let (maybe_key, raw_bytes) = self.terminal.read_key_raw()?;
 
-            // If waiting for INKEY$ input, process key (or lack thereof) and continue execution
-            if self.state.run_state == RunState::WaitingForInput {
-                if let Some(ref key) = maybe_key {
-                    // Check for Ctrl+C or Ctrl+Break to stop program
-                    if matches!(key, terminal::Key::Ctrl('c')) {
-                        self.state.run_state = RunState::Finished;
-                        self.state.set_status("Program stopped");
-                        self.current_program = None;
-                    } else {
-                        // Convert key to string for INKEY$
-                        let key_str = if !raw_bytes.is_empty() {
-                            // Use raw bytes for escape sequences (arrow keys, etc.)
-                            String::from_utf8_lossy(&raw_bytes).to_string()
+                // If waiting for INKEY$ input, process key (or lack thereof) and continue execution
+                if self.state.run_state == RunState::WaitingForInput {
+                    if let Some(ref key) = maybe_key {
+                        // Check for Ctrl+C or Ctrl+Break to stop program
+                        if matches!(key, terminal::Key::Ctrl('c')) {
+                            self.state.run_state = RunState::Finished;
+                            self.state.set_status("Program stopped");
+                            self.current_program = None;
                         } else {
-                            match key {
-                                terminal::Key::Char(c) => c.to_string(),
-                                terminal::Key::Enter => "\r".to_string(),
-                                terminal::Key::Escape => "\x1b".to_string(),
-                                terminal::Key::Tab => "\t".to_string(),
-                                _ => String::new(),
-                            }
-                        };
+                            // Convert key to string for INKEY$
+                            let key_str = if !raw_bytes.is_empty() {
+                                // Use raw bytes for escape sequences (arrow keys, etc.)
+                                String::from_utf8_lossy(&raw_bytes).to_string()
+                            } else {
+                                match key {
+                                    terminal::Key::Char(c) => c.to_string(),
+                                    terminal::Key::Enter => "\r".to_string(),
+                                    terminal::Key::Escape => "\x1b".to_string(),
+                                    terminal::Key::Tab => "\t".to_string(),
+                                    _ => String::new(),
+                                }
+                            };
 
-                        if !key_str.is_empty() {
-                            self.interpreter.pending_key = Some(key_str);
+                            if !key_str.is_empty() {
+                                self.interpreter.pending_key = Some(key_str);
+                            }
+                            // Continue execution (INKEY$ should return empty string if no key available)
+                            self.continue_after_input();
                         }
-                        // Continue execution (INKEY$ should return empty string if no key available)
+                    } else {
+                        // No key pressed - continue execution with empty INKEY$
                         self.continue_after_input();
                     }
+                    break; // Only process one event when waiting for input
+                } else if let Some(key) = maybe_key {
+                    had_input = true;
+                    // Normal input handling when not waiting for INKEY$
+                    // Debug: show raw bytes in status bar
+                    if !raw_bytes.is_empty() && raw_bytes[0] == 0x1b {
+                        let hex: Vec<String> = raw_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                        self.state.set_status(format!("Key: [{}]", hex.join(" ")));
+                    }
+                    let event = InputEvent::from(key);
+                    if !self.handle_input(event) {
+                        self.state.should_quit = true;
+                        break;
+                    }
+                    // Continue reading more events if available
                 } else {
-                    // No key pressed - continue execution with empty INKEY$
-                    self.continue_after_input();
-                }
-            } else if let Some(key) = maybe_key {
-                // Normal input handling when not waiting for INKEY$
-                // Debug: show raw bytes in status bar
-                if !raw_bytes.is_empty() && raw_bytes[0] == 0x1b {
-                    let hex: Vec<String> = raw_bytes.iter().map(|b| format!("{:02x}", b)).collect();
-                    self.state.set_status(format!("Key: [{}]", hex.join(" ")));
-                }
-                let event = InputEvent::from(key);
-                if !self.handle_input(event) {
+                    // No more input available
                     break;
                 }
-            } else {
-                // No key pressed - sleep briefly to avoid 100% CPU
+            }
+
+            if !had_input {
+                // No input this cycle - sleep briefly to avoid 100% CPU
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
 
@@ -261,7 +274,9 @@ impl App {
             InputEvent::MouseMove { row, col } |
             InputEvent::MouseRelease { row, col } |
             InputEvent::ScrollUp { row, col } |
-            InputEvent::ScrollDown { row, col } => {
+            InputEvent::ScrollDown { row, col } |
+            InputEvent::ScrollLeft { row, col } |
+            InputEvent::ScrollRight { row, col } => {
                 self.state.mouse_row = *row;
                 self.state.mouse_col = *col;
             }
@@ -283,6 +298,18 @@ impl App {
         if let InputEvent::ScrollDown { .. } = &event {
             if self.state.focus == Focus::Editor {
                 self.editor.scroll_row += 3;
+            }
+            return true;
+        }
+        if let InputEvent::ScrollLeft { .. } = &event {
+            if self.state.focus == Focus::Editor {
+                self.editor.scroll_col = self.editor.scroll_col.saturating_sub(6);
+            }
+            return true;
+        }
+        if let InputEvent::ScrollRight { .. } = &event {
+            if self.state.focus == Focus::Editor {
+                self.editor.scroll_col += 6;
             }
             return true;
         }
@@ -1218,8 +1245,8 @@ impl App {
                 return true;
             }
             "exit_button" => {
-                // Welcome dialog exit button
-                self.state.should_quit = true;
+                // Welcome dialog dismiss button - just close the dialog
+                self.state.close_dialog();
                 return true;
             }
             "find_next_button" => {
