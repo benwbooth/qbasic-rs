@@ -33,11 +33,22 @@ pub enum InputEvent {
     ShiftHome,
     ShiftEnd,
     ShiftSpace,
+    CtrlSpace,
+    /// Ctrl+Navigation for selection
+    CtrlUp,
+    CtrlDown,
+    CtrlLeft,
+    CtrlRight,
+    CtrlHome,
+    CtrlEnd,
+    CtrlPageUp,
+    CtrlPageDown,
     /// Editing keys
     Enter,
     Backspace,
     Delete,
     Tab,
+    ShiftTab,
     Insert,
     /// Escape key
     Escape,
@@ -75,8 +86,22 @@ pub enum InputEvent {
     CtrlZ, // Undo
     CtrlY, // Redo
     CtrlQ, // Quit
+    CtrlBackspace, // Delete word left
+    CtrlDelete, // Delete word right
+    /// Ctrl+Shift for selection
+    CtrlShiftLeft,
+    CtrlShiftRight,
+    CtrlShiftHome,
+    CtrlShiftEnd,
+    CtrlShiftK, // Delete line
+    /// Line operations
+    CtrlD, // Duplicate line
+    CtrlSlash, // Toggle comment
+    AltUp, // Move line up
+    AltDown, // Move line down
     /// Other
     Unknown,
+    UnknownBytes(Vec<u8>),
     None,
 }
 
@@ -89,6 +114,7 @@ impl From<Key> for InputEvent {
             Key::Backspace => InputEvent::Backspace,
             Key::Delete => InputEvent::Delete,
             Key::Tab => InputEvent::Tab,
+            Key::ShiftTab => InputEvent::ShiftTab,
             Key::Up => InputEvent::CursorUp,
             Key::Down => InputEvent::CursorDown,
             Key::Left => InputEvent::CursorLeft,
@@ -105,6 +131,26 @@ impl From<Key> for InputEvent {
             Key::ShiftHome => InputEvent::ShiftHome,
             Key::ShiftEnd => InputEvent::ShiftEnd,
             Key::ShiftSpace => InputEvent::ShiftSpace,
+            Key::CtrlSpace => InputEvent::CtrlSpace,
+            Key::CtrlUp => InputEvent::CtrlUp,
+            Key::CtrlDown => InputEvent::CtrlDown,
+            Key::CtrlLeft => InputEvent::CtrlLeft,
+            Key::CtrlRight => InputEvent::CtrlRight,
+            Key::CtrlHome => InputEvent::CtrlHome,
+            Key::CtrlEnd => InputEvent::CtrlEnd,
+            Key::CtrlPageUp => InputEvent::CtrlPageUp,
+            Key::CtrlPageDown => InputEvent::CtrlPageDown,
+            Key::CtrlBackspace => InputEvent::CtrlBackspace,
+            Key::CtrlDelete => InputEvent::CtrlDelete,
+            Key::CtrlShiftLeft => InputEvent::CtrlShiftLeft,
+            Key::CtrlShiftRight => InputEvent::CtrlShiftRight,
+            Key::CtrlShiftHome => InputEvent::CtrlShiftHome,
+            Key::CtrlShiftEnd => InputEvent::CtrlShiftEnd,
+            Key::CtrlShiftK => InputEvent::CtrlShiftK,
+            Key::AltUp => InputEvent::AltUp,
+            Key::AltDown => InputEvent::AltDown,
+            Key::Ctrl('d') => InputEvent::CtrlD,
+            Key::Ctrl('/') => InputEvent::CtrlSlash,
             Key::F(1) => InputEvent::F1,
             Key::F(2) => InputEvent::F2,
             Key::F(3) => InputEvent::F3,
@@ -152,7 +198,7 @@ impl From<Key> for InputEvent {
                 InputEvent::ScrollDown { row, col }
             }
             Key::Mouse(_) => InputEvent::Unknown, // Ignore other mouse events
-            Key::Unknown(_) => InputEvent::Unknown,
+            Key::Unknown(bytes) => InputEvent::UnknownBytes(bytes),
             _ => InputEvent::Unknown,
         }
     }

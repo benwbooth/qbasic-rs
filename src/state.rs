@@ -18,6 +18,7 @@ pub enum RunState {
     Running,
     Paused,  // At breakpoint
     Stepping,
+    Finished,  // Program completed, waiting for key press to return to editor
 }
 
 /// Active dialog type
@@ -37,6 +38,12 @@ pub enum DialogType {
     NewProgram,
     Print,
     Welcome,
+    NewSub,
+    NewFunction,
+    FindLabel,
+    CommandArgs,
+    HelpPath,
+    DisplayOptions,
 }
 
 /// Current editor mode
@@ -100,6 +107,39 @@ pub struct AppState {
 
     /// Immediate window height (in lines)
     pub immediate_height: u16,
+
+    /// Immediate window maximized
+    pub immediate_maximized: bool,
+
+    /// Immediate window border being dragged for resize
+    pub immediate_resize_dragging: bool,
+
+    /// Show output window (for program execution)
+    pub show_output: bool,
+
+    /// Output window height (in lines)
+    pub output_height: u16,
+
+    /// Command line arguments for COMMAND$
+    pub command_args: String,
+
+    /// Help file path
+    pub help_path: String,
+
+    /// Syntax checking enabled
+    pub syntax_checking: bool,
+
+    /// Syntax errors (line number, error message)
+    pub syntax_errors: Vec<(usize, String)>,
+
+    /// Tab stop width
+    pub tab_stops: usize,
+
+    /// Show scrollbars
+    pub show_scrollbars: bool,
+
+    /// Color scheme (0=Classic Blue, 1=Dark, 2=Light)
+    pub color_scheme: usize,
 
     /// Breakpoints
     pub breakpoints: Vec<Breakpoint>,
@@ -175,11 +215,18 @@ pub struct AppState {
     /// Selected filename in file dialog
     pub dialog_filename: String,
 
-    /// Last click time for double-click detection
+    /// Last click time for multi-click detection
     pub last_click_time: std::time::Instant,
 
-    /// Last click position for double-click detection
+    /// Last click position for multi-click detection
     pub last_click_pos: (u16, u16),
+
+    /// Click count for multi-click detection (1=single, 2=double, 3=triple, 4=quadruple)
+    pub click_count: u8,
+
+    /// Anchor selection bounds for multi-click drag extension
+    /// Stores ((start_line, start_col), (end_line, end_col)) of the initial selection
+    pub selection_anchor: Option<((usize, usize), (usize, usize))>,
 
     /// Computed dialog layout for hit testing
     pub dialog_layout: Option<crate::ui::layout::ComputedLayout>,
@@ -207,6 +254,17 @@ impl Default for AppState {
             editor_mode: EditorMode::Insert,
             show_immediate: true,
             immediate_height: 6,
+            immediate_maximized: false,
+            immediate_resize_dragging: false,
+            show_output: false,
+            output_height: 10,
+            command_args: String::new(),
+            help_path: String::new(),
+            syntax_checking: true,
+            syntax_errors: Vec::new(),
+            tab_stops: 8,
+            show_scrollbars: true,
+            color_scheme: 0,
             breakpoints: Vec::new(),
             current_line: None,
             status_message: None,
@@ -235,6 +293,8 @@ impl Default for AppState {
             dialog_filename: String::new(),
             last_click_time: std::time::Instant::now(),
             last_click_pos: (0, 0),
+            click_count: 0,
+            selection_anchor: None,
             dialog_layout: None,
             vscroll_dragging: false,
             hscroll_dragging: false,
@@ -296,6 +356,12 @@ impl AppState {
             DialogType::GoToLine => (2, 40, 7),
             DialogType::Print => (2, 50, 10),
             DialogType::Welcome => (2, 54, 12),
+            DialogType::NewSub => (2, 45, 7),
+            DialogType::NewFunction => (2, 45, 7),
+            DialogType::FindLabel => (2, 45, 7),
+            DialogType::CommandArgs => (2, 55, 7),
+            DialogType::HelpPath => (2, 55, 7),
+            DialogType::DisplayOptions => (2, 50, 14),
         };
 
         self.dialog_button_count = button_count;

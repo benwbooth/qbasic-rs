@@ -431,17 +431,39 @@ pub fn message_dialog_layout() -> LayoutItem {
 
 /// Create the main screen layout
 /// - menu_bar: Fixed height 1 at top
+/// - output: Conditional, fixed height if shown (program output window)
 /// - editor: Flex height (takes remaining space)
 /// - immediate: Conditional, fixed height if shown
 /// - status_bar: Fixed height 1 at bottom
-pub fn main_screen_layout(show_immediate: bool, immediate_height: u16) -> LayoutItem {
+pub fn main_screen_layout(
+    show_immediate: bool,
+    immediate_height: u16,
+    immediate_maximized: bool,
+    show_output: bool,
+    output_height: u16,
+) -> LayoutItem {
     let mut children = vec![
         LayoutItem::leaf("menu_bar").fixed_height(1),
-        LayoutItem::leaf("editor").height(Size::Flex(1)),
     ];
 
-    if show_immediate {
-        children.push(LayoutItem::leaf("immediate").fixed_height(immediate_height));
+    // Output window appears above editor when shown
+    if show_output {
+        children.push(LayoutItem::leaf("output").fixed_height(output_height));
+    }
+
+    // If immediate is maximized, it takes all the editor space
+    if immediate_maximized && show_immediate {
+        // Minimal editor (just 1 line visible)
+        children.push(LayoutItem::leaf("editor").fixed_height(1));
+        // Immediate takes remaining space
+        children.push(LayoutItem::leaf("immediate").height(Size::Flex(1)));
+    } else {
+        // Normal layout
+        children.push(LayoutItem::leaf("editor").height(Size::Flex(1)));
+
+        if show_immediate {
+            children.push(LayoutItem::leaf("immediate").fixed_height(immediate_height));
+        }
     }
 
     children.push(LayoutItem::leaf("status_bar").fixed_height(1));

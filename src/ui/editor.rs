@@ -41,6 +41,120 @@ const KEYWORDS: &[&str] = &[
     "XOR",
 ];
 
+/// Auto-format a line of BASIC code
+/// - Uppercase keywords
+/// - Add spacing around operators
+pub fn format_basic_line(line: &str) -> String {
+    if line.trim().is_empty() {
+        return line.to_string();
+    }
+
+    let mut result = String::new();
+    let mut chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    let mut in_string = false;
+    let mut in_comment = false;
+
+    // Preserve leading whitespace
+    while i < chars.len() && chars[i].is_whitespace() {
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    while i < chars.len() {
+        let ch = chars[i];
+
+        // Handle string literals - don't modify content
+        if ch == '"' && !in_comment {
+            in_string = !in_string;
+            result.push(ch);
+            i += 1;
+            continue;
+        }
+
+        if in_string {
+            result.push(ch);
+            i += 1;
+            continue;
+        }
+
+        // Check for REM or ' comment
+        if !in_comment {
+            let remaining: String = chars[i..].iter().collect();
+            let upper_remaining = remaining.to_uppercase();
+            if upper_remaining.starts_with("REM ") || upper_remaining.starts_with("REM\t") || upper_remaining == "REM" {
+                in_comment = true;
+                result.push_str("REM");
+                i += 3;
+                continue;
+            }
+            if ch == '\'' {
+                in_comment = true;
+                result.push(ch);
+                i += 1;
+                continue;
+            }
+        }
+
+        if in_comment {
+            result.push(ch);
+            i += 1;
+            continue;
+        }
+
+        // Check for identifier/keyword
+        if ch.is_alphabetic() || ch == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '$' || chars[i] == '%' || chars[i] == '&' || chars[i] == '!' || chars[i] == '#') {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            let upper_word = word.to_uppercase();
+
+            // Check if it's a keyword
+            if KEYWORDS.contains(&upper_word.as_str()) {
+                result.push_str(&upper_word);
+            } else {
+                // Keep original case for identifiers
+                result.push_str(&word);
+            }
+            continue;
+        }
+
+        // Handle operators - add spacing
+        if ch == '=' || ch == '<' || ch == '>' {
+            // Check for compound operators
+            let next = chars.get(i + 1).copied();
+
+            // Add space before if not already there
+            if !result.ends_with(' ') && !result.ends_with('(') && !result.is_empty() {
+                result.push(' ');
+            }
+
+            result.push(ch);
+            if let Some(n) = next {
+                if (ch == '<' && (n == '>' || n == '=')) || (ch == '>' && n == '=') {
+                    result.push(n);
+                    i += 1;
+                }
+            }
+
+            // Add space after
+            i += 1;
+            if i < chars.len() && !chars[i].is_whitespace() {
+                result.push(' ');
+            }
+            continue;
+        }
+
+        // Regular character
+        result.push(ch);
+        i += 1;
+    }
+
+    result
+}
+
 /// Types of undoable actions
 #[derive(Clone, Debug)]
 pub enum UndoAction {
@@ -134,6 +248,34 @@ impl TextBuffer {
         }
     }
 
+    pub fn replace_line(&mut self, line: usize, text: &str) {
+        if line < self.lines.len() {
+            self.lines[line] = text.to_string();
+        }
+    }
+
+    /// Join line with the next line
+    pub fn join_lines(&mut self, line: usize) {
+        if line + 1 < self.lines.len() {
+            let next = self.lines.remove(line + 1);
+            self.lines[line].push_str(&next);
+        }
+    }
+
+    /// Insert a new line at the given position
+    pub fn insert_line(&mut self, line: usize, text: &str) {
+        if line <= self.lines.len() {
+            self.lines.insert(line, text.to_string());
+        }
+    }
+
+    /// Swap two adjacent lines
+    pub fn swap_lines(&mut self, line1: usize, line2: usize) {
+        if line1 < self.lines.len() && line2 < self.lines.len() {
+            self.lines.swap(line1, line2);
+        }
+    }
+
     pub fn to_string(&self) -> String {
         self.lines.join("\n")
     }
@@ -159,6 +301,7 @@ pub struct Editor {
     pub selection_start: Option<(usize, usize)>,  // (line, col)
     pub selection_end: Option<(usize, usize)>,    // (line, col)
     pub is_selecting: bool,  // True when mouse drag started in editor
+    pub keyboard_select_mode: bool,  // True when Ctrl+Space activated selection mode
     pub undo_stack: Vec<UndoAction>,
     pub redo_stack: Vec<UndoAction>,
 }
@@ -174,6 +317,7 @@ impl Editor {
             selection_start: None,
             selection_end: None,
             is_selecting: false,
+            keyboard_select_mode: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         }
@@ -198,11 +342,442 @@ impl Editor {
         self.is_selecting = false;
     }
 
+    /// Select the word at the current cursor position
+    pub fn select_word(&mut self) {
+        if let Some(line) = self.buffer.line(self.cursor_line) {
+            if line.is_empty() {
+                return;
+            }
+
+            let chars: Vec<char> = line.chars().collect();
+            let col = self.cursor_col.min(chars.len().saturating_sub(1));
+
+            // Find word boundaries
+            let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+
+            // If we're on a non-word char, select just that character
+            if !is_word_char(chars[col]) {
+                self.selection_start = Some((self.cursor_line, col));
+                self.selection_end = Some((self.cursor_line, col + 1));
+                return;
+            }
+
+            // Find start of word
+            let mut start = col;
+            while start > 0 && is_word_char(chars[start - 1]) {
+                start -= 1;
+            }
+
+            // Find end of word
+            let mut end = col;
+            while end < chars.len() && is_word_char(chars[end]) {
+                end += 1;
+            }
+
+            self.selection_start = Some((self.cursor_line, start));
+            self.selection_end = Some((self.cursor_line, end));
+        }
+    }
+
+    /// Select the entire line at the current cursor position
+    pub fn select_line(&mut self) {
+        if let Some(line) = self.buffer.line(self.cursor_line) {
+            self.selection_start = Some((self.cursor_line, 0));
+            // Include newline by selecting to start of next line
+            if self.cursor_line + 1 < self.buffer.line_count() {
+                self.selection_end = Some((self.cursor_line + 1, 0));
+            } else {
+                self.selection_end = Some((self.cursor_line, line.len()));
+            }
+        }
+    }
+
+    /// Select the paragraph at the current cursor position (lines until blank line)
+    pub fn select_paragraph(&mut self) {
+        // Find start of paragraph (first non-empty line going up, or a blank line)
+        let mut para_start = self.cursor_line;
+        while para_start > 0 {
+            if let Some(line) = self.buffer.line(para_start - 1) {
+                if line.trim().is_empty() {
+                    break;
+                }
+                para_start -= 1;
+            } else {
+                break;
+            }
+        }
+
+        // Find end of paragraph (first blank line going down, or end of file)
+        let mut para_end = self.cursor_line;
+        let line_count = self.buffer.line_count();
+        while para_end < line_count {
+            if let Some(line) = self.buffer.line(para_end) {
+                if line.trim().is_empty() {
+                    break;
+                }
+                para_end += 1;
+            } else {
+                break;
+            }
+        }
+
+        self.selection_start = Some((para_start, 0));
+        if para_end < line_count {
+            self.selection_end = Some((para_end, 0));
+        } else if let Some(line) = self.buffer.line(para_end.saturating_sub(1)) {
+            self.selection_end = Some((para_end.saturating_sub(1), line.len()));
+        }
+    }
+
     /// Clear the current selection
     pub fn clear_selection(&mut self) {
         self.selection_start = None;
         self.selection_end = None;
         self.is_selecting = false;
+    }
+
+    /// Move cursor to the start of the previous word
+    pub fn move_word_left(&mut self) {
+        if let Some(line) = self.buffer.line(self.cursor_line) {
+            let chars: Vec<char> = line.chars().collect();
+
+            if self.cursor_col == 0 {
+                // Move to end of previous line
+                if self.cursor_line > 0 {
+                    self.cursor_line -= 1;
+                    self.cursor_col = self.buffer.line(self.cursor_line).map(|l| l.len()).unwrap_or(0);
+                }
+                return;
+            }
+
+            let mut col = self.cursor_col.min(chars.len());
+
+            // Skip whitespace going left
+            while col > 0 && !chars[col - 1].is_alphanumeric() && chars[col - 1] != '_' {
+                col -= 1;
+            }
+
+            // Skip word characters going left
+            while col > 0 && (chars[col - 1].is_alphanumeric() || chars[col - 1] == '_') {
+                col -= 1;
+            }
+
+            self.cursor_col = col;
+        }
+    }
+
+    /// Move cursor to the start of the next word
+    pub fn move_word_right(&mut self) {
+        if let Some(line) = self.buffer.line(self.cursor_line) {
+            let chars: Vec<char> = line.chars().collect();
+
+            if self.cursor_col >= chars.len() {
+                // Move to start of next line
+                if self.cursor_line + 1 < self.buffer.line_count() {
+                    self.cursor_line += 1;
+                    self.cursor_col = 0;
+                }
+                return;
+            }
+
+            let mut col = self.cursor_col;
+
+            // Skip word characters going right
+            while col < chars.len() && (chars[col].is_alphanumeric() || chars[col] == '_') {
+                col += 1;
+            }
+
+            // Skip whitespace/punctuation going right
+            while col < chars.len() && !chars[col].is_alphanumeric() && chars[col] != '_' {
+                col += 1;
+            }
+
+            self.cursor_col = col;
+        }
+    }
+
+    /// Delete word to the left of cursor
+    pub fn delete_word_left(&mut self) {
+        if self.cursor_col == 0 && self.cursor_line == 0 {
+            return;
+        }
+
+        let start_line = self.cursor_line;
+        let start_col = self.cursor_col;
+
+        self.move_word_left();
+
+        // Delete from new position to old position
+        if self.cursor_line == start_line {
+            // Same line - delete characters
+            for _ in self.cursor_col..start_col {
+                self.buffer.delete_char(self.cursor_line, self.cursor_col);
+            }
+        } else {
+            // Crossed lines - join with previous line
+            self.buffer.join_lines(self.cursor_line);
+        }
+    }
+
+    /// Delete word to the right of cursor
+    pub fn delete_word_right(&mut self) {
+        let line_len = self.buffer.line(self.cursor_line).map(|l| l.len()).unwrap_or(0);
+
+        if self.cursor_col >= line_len && self.cursor_line + 1 >= self.buffer.line_count() {
+            return;
+        }
+
+        let start_col = self.cursor_col;
+        let start_line = self.cursor_line;
+
+        // Calculate where word ends
+        if let Some(line) = self.buffer.line(self.cursor_line) {
+            let chars: Vec<char> = line.chars().collect();
+
+            if self.cursor_col >= chars.len() {
+                // At end of line - join with next line
+                self.buffer.join_lines(self.cursor_line);
+                return;
+            }
+
+            let mut col = self.cursor_col;
+
+            // Skip word characters going right
+            while col < chars.len() && (chars[col].is_alphanumeric() || chars[col] == '_') {
+                col += 1;
+            }
+
+            // Skip whitespace/punctuation going right
+            while col < chars.len() && !chars[col].is_alphanumeric() && chars[col] != '_' {
+                col += 1;
+            }
+
+            // Delete from cursor to col
+            for _ in start_col..col {
+                self.buffer.delete_char(start_line, start_col);
+            }
+        }
+    }
+
+    /// Duplicate the current line
+    pub fn duplicate_line(&mut self) {
+        if let Some(line) = self.buffer.line(self.cursor_line) {
+            let line_copy = line.to_string();
+            self.buffer.insert_line(self.cursor_line + 1, &line_copy);
+            self.cursor_line += 1;
+        }
+    }
+
+    /// Delete the current line
+    pub fn delete_line(&mut self) {
+        if self.buffer.line_count() > 1 {
+            self.buffer.delete_line(self.cursor_line);
+            if self.cursor_line >= self.buffer.line_count() {
+                self.cursor_line = self.buffer.line_count().saturating_sub(1);
+            }
+            self.clamp_cursor();
+        } else {
+            // Last line - just clear it
+            self.buffer.replace_line(0, "");
+            self.cursor_col = 0;
+        }
+    }
+
+    /// Move the current line up
+    pub fn move_line_up(&mut self) {
+        if self.cursor_line > 0 {
+            self.buffer.swap_lines(self.cursor_line - 1, self.cursor_line);
+            self.cursor_line -= 1;
+        }
+    }
+
+    /// Move the current line down
+    pub fn move_line_down(&mut self) {
+        if self.cursor_line + 1 < self.buffer.line_count() {
+            self.buffer.swap_lines(self.cursor_line, self.cursor_line + 1);
+            self.cursor_line += 1;
+        }
+    }
+
+    /// Toggle comment on the current line (BASIC uses ' for comments)
+    pub fn toggle_comment(&mut self) {
+        let line = match self.buffer.line(self.cursor_line) {
+            Some(l) => l.to_string(),
+            None => return,
+        };
+
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('\'') {
+            // Remove comment - find and remove the first '
+            let comment_pos = line.find('\'').unwrap();
+            let mut new_line = line.clone();
+            new_line.remove(comment_pos);
+            // Check if there was a space after the apostrophe
+            let had_space = line.chars().nth(comment_pos + 1) == Some(' ');
+            // Also remove space after ' if present
+            if new_line.chars().nth(comment_pos) == Some(' ') {
+                new_line.remove(comment_pos);
+            }
+            self.buffer.replace_line(self.cursor_line, &new_line);
+            // Adjust cursor if it was after the comment char
+            if self.cursor_col > comment_pos {
+                self.cursor_col = self.cursor_col.saturating_sub(if had_space { 2 } else { 1 });
+            }
+        } else {
+            // Add comment at start of content (after leading whitespace)
+            let leading_space: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+            let content = &line[leading_space.len()..];
+            let new_line = format!("{}' {}", leading_space, content);
+            self.buffer.replace_line(self.cursor_line, &new_line);
+            // Adjust cursor position
+            if self.cursor_col >= leading_space.len() {
+                self.cursor_col += 2; // Account for "' "
+            }
+        }
+    }
+
+    /// Get word bounds at a given position
+    /// Returns (start_col, end_col) for the word containing the position
+    pub fn get_word_bounds(&self, line_idx: usize, col: usize) -> Option<(usize, usize)> {
+        let line = self.buffer.line(line_idx)?;
+        if line.is_empty() {
+            return Some((0, 0));
+        }
+
+        let chars: Vec<char> = line.chars().collect();
+        let col = col.min(chars.len().saturating_sub(1));
+
+        let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+
+        // If we're on a non-word char, return just that character
+        if !is_word_char(chars[col]) {
+            return Some((col, col + 1));
+        }
+
+        // Find start of word
+        let mut start = col;
+        while start > 0 && is_word_char(chars[start - 1]) {
+            start -= 1;
+        }
+
+        // Find end of word
+        let mut end = col;
+        while end < chars.len() && is_word_char(chars[end]) {
+            end += 1;
+        }
+
+        Some((start, end))
+    }
+
+    /// Get line bounds for selection purposes
+    /// Returns ((line, 0), (next_line, 0)) or ((line, 0), (line, len)) for last line
+    pub fn get_line_bounds(&self, line_idx: usize) -> Option<((usize, usize), (usize, usize))> {
+        let line = self.buffer.line(line_idx)?;
+        let start = (line_idx, 0);
+        let end = if line_idx + 1 < self.buffer.line_count() {
+            (line_idx + 1, 0)
+        } else {
+            (line_idx, line.len())
+        };
+        Some((start, end))
+    }
+
+    /// Get paragraph bounds for selection purposes
+    /// Returns the start and end positions of the paragraph containing the given line
+    pub fn get_paragraph_bounds(&self, line_idx: usize) -> Option<((usize, usize), (usize, usize))> {
+        let line_count = self.buffer.line_count();
+        if line_idx >= line_count {
+            return None;
+        }
+
+        // Find start of paragraph
+        let mut para_start = line_idx;
+        while para_start > 0 {
+            if let Some(line) = self.buffer.line(para_start - 1) {
+                if line.trim().is_empty() {
+                    break;
+                }
+                para_start -= 1;
+            } else {
+                break;
+            }
+        }
+
+        // Find end of paragraph
+        let mut para_end = line_idx;
+        while para_end < line_count {
+            if let Some(line) = self.buffer.line(para_end) {
+                if line.trim().is_empty() {
+                    break;
+                }
+                para_end += 1;
+            } else {
+                break;
+            }
+        }
+
+        let start = (para_start, 0);
+        let end = if para_end < line_count {
+            (para_end, 0)
+        } else if let Some(line) = self.buffer.line(para_end.saturating_sub(1)) {
+            (para_end.saturating_sub(1), line.len())
+        } else {
+            (para_end.saturating_sub(1), 0)
+        };
+
+        Some((start, end))
+    }
+
+    /// Extend selection by word, given anchor bounds
+    /// anchor: ((start_line, start_col), (end_line, end_col)) of initial word selection
+    pub fn extend_selection_by_word(&mut self, anchor: ((usize, usize), (usize, usize))) {
+        // Get word bounds at current cursor position
+        if let Some((word_start, word_end)) = self.get_word_bounds(self.cursor_line, self.cursor_col) {
+            let cursor_word = ((self.cursor_line, word_start), (self.cursor_line, word_end));
+
+            // Determine which comes first
+            let (first, second) = if anchor.0 < cursor_word.0 ||
+                (anchor.0 .0 == cursor_word.0 .0 && anchor.0 .1 <= cursor_word.0 .1) {
+                (anchor, cursor_word)
+            } else {
+                (cursor_word, anchor)
+            };
+
+            self.selection_start = Some(first.0);
+            self.selection_end = Some(second.1);
+        }
+    }
+
+    /// Extend selection by line, given anchor bounds
+    pub fn extend_selection_by_line(&mut self, anchor: ((usize, usize), (usize, usize))) {
+        // Get line bounds at current cursor position
+        if let Some(cursor_line_bounds) = self.get_line_bounds(self.cursor_line) {
+            // Determine which comes first
+            let (first, second) = if anchor.0 .0 <= cursor_line_bounds.0 .0 {
+                (anchor, cursor_line_bounds)
+            } else {
+                (cursor_line_bounds, anchor)
+            };
+
+            self.selection_start = Some(first.0);
+            self.selection_end = Some(second.1);
+        }
+    }
+
+    /// Extend selection by paragraph, given anchor bounds
+    pub fn extend_selection_by_paragraph(&mut self, anchor: ((usize, usize), (usize, usize))) {
+        // Get paragraph bounds at current cursor position
+        if let Some(cursor_para_bounds) = self.get_paragraph_bounds(self.cursor_line) {
+            // Determine which comes first
+            let (first, second) = if anchor.0 .0 <= cursor_para_bounds.0 .0 {
+                (anchor, cursor_para_bounds)
+            } else {
+                (cursor_para_bounds, anchor)
+            };
+
+            self.selection_start = Some(first.0);
+            self.selection_end = Some(second.1);
+        }
     }
 
     /// Check if a position is within the selection
@@ -305,6 +880,9 @@ impl Editor {
             None => return false,
         };
 
+        // Get the selected text before deleting (for undo)
+        let deleted_text = self.get_selected_text().unwrap_or_default();
+
         let ((start_line, start_col), (end_line, end_col)) = bounds;
 
         if start_line == end_line {
@@ -343,8 +921,18 @@ impl Editor {
         self.cursor_line = start_line;
         self.cursor_col = start_col;
 
-        // Clear the selection
+        // Clear the selection and keyboard select mode
         self.clear_selection();
+        self.keyboard_select_mode = false;
+
+        // Record undo action for the deleted text
+        if !deleted_text.is_empty() {
+            self.record_undo(UndoAction::Delete {
+                line: start_line,
+                col: start_col,
+                text: deleted_text,
+            });
+        }
 
         true
     }
@@ -360,6 +948,16 @@ impl Editor {
 
     /// Insert text at cursor position (handles multi-line text for paste)
     pub fn insert_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+
+        let start_line = self.cursor_line;
+        let start_col = self.cursor_col;
+
+        // Filter out carriage returns for the undo record
+        let clean_text: String = text.chars().filter(|&c| c != '\r').collect();
+
         for ch in text.chars() {
             if ch == '\n' {
                 let (new_line, new_col) = self.buffer.insert_newline(self.cursor_line, self.cursor_col);
@@ -369,6 +967,15 @@ impl Editor {
                 self.buffer.insert_char(self.cursor_line, self.cursor_col, ch);
                 self.cursor_col += 1;
             }
+        }
+
+        // Record undo action for the inserted text
+        if !clean_text.is_empty() {
+            self.record_undo(UndoAction::Insert {
+                line: start_line,
+                col: start_col,
+                text: clean_text,
+            });
         }
     }
 
@@ -384,25 +991,44 @@ impl Editor {
         if let Some(action) = self.undo_stack.pop() {
             match &action {
                 UndoAction::Insert { line, col, text } => {
-                    // To undo an insert, delete the text
-                    let line = *line;
-                    let col = *col;
-                    for _ in 0..text.len() {
-                        self.buffer.delete_char(line, col);
+                    // To undo an insert, delete the text (handles multi-line)
+                    let start_line = *line;
+                    let start_col = *col;
+                    self.cursor_line = start_line;
+                    self.cursor_col = start_col;
+
+                    // Delete character by character, handling newlines
+                    for ch in text.chars() {
+                        if ch == '\n' {
+                            // Join with next line
+                            if self.cursor_line + 1 < self.buffer.line_count() {
+                                let next_line = self.buffer.lines.remove(self.cursor_line + 1);
+                                self.buffer.lines[self.cursor_line].push_str(&next_line);
+                            }
+                        } else {
+                            self.buffer.delete_char(self.cursor_line, self.cursor_col);
+                        }
                     }
-                    self.cursor_line = line;
-                    self.cursor_col = col;
+                    self.cursor_line = start_line;
+                    self.cursor_col = start_col;
                 }
                 UndoAction::Delete { line, col, text } => {
-                    // To undo a delete, insert the text back
-                    let line = *line;
-                    let mut insert_col = *col;
+                    // To undo a delete, insert the text back (handles multi-line)
+                    let start_line = *line;
+                    let start_col = *col;
+                    self.cursor_line = start_line;
+                    self.cursor_col = start_col;
+
                     for ch in text.chars() {
-                        self.buffer.insert_char(line, insert_col, ch);
-                        insert_col += 1;
+                        if ch == '\n' {
+                            let (new_line, new_col) = self.buffer.insert_newline(self.cursor_line, self.cursor_col);
+                            self.cursor_line = new_line;
+                            self.cursor_col = new_col;
+                        } else {
+                            self.buffer.insert_char(self.cursor_line, self.cursor_col, ch);
+                            self.cursor_col += 1;
+                        }
                     }
-                    self.cursor_line = line;
-                    self.cursor_col = insert_col;
                 }
                 UndoAction::SplitLine { line, col } => {
                     // To undo a split, join the lines
@@ -440,25 +1066,43 @@ impl Editor {
         if let Some(action) = self.redo_stack.pop() {
             match &action {
                 UndoAction::Insert { line, col, text } => {
-                    // To redo an insert, insert the text again
-                    let line = *line;
-                    let mut col = *col;
+                    // To redo an insert, insert the text again (handles multi-line)
+                    let start_line = *line;
+                    let start_col = *col;
+                    self.cursor_line = start_line;
+                    self.cursor_col = start_col;
+
                     for ch in text.chars() {
-                        self.buffer.insert_char(line, col, ch);
-                        col += 1;
+                        if ch == '\n' {
+                            let (new_line, new_col) = self.buffer.insert_newline(self.cursor_line, self.cursor_col);
+                            self.cursor_line = new_line;
+                            self.cursor_col = new_col;
+                        } else {
+                            self.buffer.insert_char(self.cursor_line, self.cursor_col, ch);
+                            self.cursor_col += 1;
+                        }
                     }
-                    self.cursor_line = line;
-                    self.cursor_col = col;
                 }
                 UndoAction::Delete { line, col, text } => {
-                    // To redo a delete, delete the text again
-                    let line = *line;
-                    let col = *col;
-                    for _ in 0..text.len() {
-                        self.buffer.delete_char(line, col);
+                    // To redo a delete, delete the text again (handles multi-line)
+                    let start_line = *line;
+                    let start_col = *col;
+                    self.cursor_line = start_line;
+                    self.cursor_col = start_col;
+
+                    for ch in text.chars() {
+                        if ch == '\n' {
+                            // Join with next line
+                            if self.cursor_line + 1 < self.buffer.line_count() {
+                                let next_line = self.buffer.lines.remove(self.cursor_line + 1);
+                                self.buffer.lines[self.cursor_line].push_str(&next_line);
+                            }
+                        } else {
+                            self.buffer.delete_char(self.cursor_line, self.cursor_col);
+                        }
                     }
-                    self.cursor_line = line;
-                    self.cursor_col = col;
+                    self.cursor_line = start_line;
+                    self.cursor_col = start_col;
                 }
                 UndoAction::SplitLine { line, col } => {
                     // To redo a split, split the line again
@@ -536,6 +1180,13 @@ impl Editor {
                 && cursor_screen_col < content_col + content_width
             {
                 screen.set_cursor(cursor_screen_row, cursor_screen_col);
+                // Set cursor style based on editor mode
+                use crate::terminal::CursorStyle;
+                let cursor_style = match state.editor_mode {
+                    EditorMode::Insert => CursorStyle::BlinkingUnderline,
+                    EditorMode::Overwrite => CursorStyle::BlinkingBlock,
+                };
+                screen.set_cursor_style(cursor_style);
                 screen.set_cursor_visible(true);
             }
         }
@@ -548,12 +1199,12 @@ impl Editor {
         let height = bounds.height;
 
         // Draw border
-        screen.draw_box(row, col, width, height, Color::White, Color::Blue);
+        screen.draw_box(row, col, width, height, Color::LightGray, Color::Blue);
 
-        // Draw title bar with filename - inverted colors (blue on white)
+        // Draw title bar with filename - inverted colors
         let title = format!(" {} ", state.title());
         let title_x = col + (width.saturating_sub(title.len() as u16)) / 2;
-        screen.write_str(row, title_x, &title, Color::Blue, Color::White);
+        screen.write_str(row, title_x, &title, Color::Blue, Color::LightGray);
 
         // Draw scroll bars
         self.draw_scrollbars(screen, bounds);
@@ -590,7 +1241,7 @@ impl Editor {
                 0
             };
             let thumb_row = row + 2 + thumb_pos as u16;
-            screen.set(thumb_row, scrollbar_col, '█', Color::White, Color::Blue);
+            screen.set(thumb_row, scrollbar_col, '█', Color::Black, Color::Blue);
         }
 
         // Horizontal scrollbar on bottom edge (inside border)
@@ -618,7 +1269,7 @@ impl Editor {
                 0
             };
             let thumb_col = col + 2 + thumb_pos as u16;
-            screen.set(scrollbar_row, thumb_col, '█', Color::White, Color::Blue);
+            screen.set(scrollbar_row, thumb_col, '█', Color::Black, Color::Blue);
         }
     }
 
@@ -627,11 +1278,17 @@ impl Editor {
         let has_bp = state.has_breakpoint(line_num);
         let is_current = state.current_line == Some(line_num);
 
+        // Check for syntax error on this line
+        let syntax_error = state.syntax_errors.iter().find(|(l, _)| *l == line_num);
+        let has_error = syntax_error.is_some();
+
         // Background color
         let normal_bg = if is_current {
             Color::Cyan
         } else if has_bp {
             Color::Red
+        } else if has_error {
+            Color::Magenta // Highlight error lines
         } else {
             Color::Blue
         };
@@ -640,7 +1297,7 @@ impl Editor {
         for c in 0..width {
             let char_col = self.scroll_col + c as usize;
             let (fg, bg) = if self.is_selected(line_num, char_col) {
-                (Color::Black, Color::White)  // Inverted for selection
+                (Color::Yellow.invert(), Color::LightGray)  // Selection with inverted fg
             } else {
                 (Color::Yellow, normal_bg)
             };
@@ -656,7 +1313,7 @@ impl Editor {
                 break;
             }
 
-            let normal_fg = match token.kind {
+            let token_fg = match token.kind {
                 TokenKind::Keyword => Color::White,
                 TokenKind::String => Color::LightMagenta,
                 TokenKind::Number => Color::LightCyan,
@@ -671,9 +1328,9 @@ impl Editor {
                 if x >= self.scroll_col && x - self.scroll_col < width as usize {
                     let screen_x = col + (x - self.scroll_col) as u16;
                     let (fg, bg) = if self.is_selected(line_num, x) {
-                        (Color::Black, Color::White)  // Inverted for selection
+                        (token_fg.invert(), Color::LightGray)  // Selection with inverted fg
                     } else {
-                        (normal_fg, normal_bg)
+                        (token_fg, normal_bg)
                     };
                     screen.set(row, screen_x, ch, fg, bg);
                 }
@@ -723,6 +1380,23 @@ impl Editor {
                     self.delete_selection();
                     state.set_modified(true);
                 }
+
+                // Auto-format the current line before inserting newline
+                if let Some(line) = self.buffer.line(self.cursor_line) {
+                    let formatted = format_basic_line(line);
+                    if formatted != line {
+                        // Update the line with formatted version
+                        if let Some(line_mut) = self.buffer.line_mut(self.cursor_line) {
+                            *line_mut = formatted.clone();
+                        }
+                        // Adjust cursor if it's past the end of the new line
+                        let new_len = formatted.len();
+                        if self.cursor_col > new_len {
+                            self.cursor_col = new_len;
+                        }
+                    }
+                }
+
                 // Record split for undo
                 self.record_undo(UndoAction::SplitLine {
                     line: self.cursor_line,
@@ -799,82 +1473,211 @@ impl Editor {
                 true
             }
             InputEvent::Tab => {
-                // If there's a selection, delete it first
+                // If there's a selection spanning multiple lines, indent all selected lines
                 if self.has_selection() {
+                    if let Some(((start_line, _), (end_line, _))) = self.get_selection_bounds() {
+                        if start_line != end_line {
+                            // Indent all selected lines
+                            for line_num in start_line..=end_line {
+                                if let Some(line) = self.buffer.line(line_num) {
+                                    // Prepend 4 spaces to the line
+                                    let new_line = format!("    {}", line);
+                                    self.buffer.replace_line(line_num, &new_line);
+                                }
+                            }
+                            // Adjust selection to account for added spaces
+                            if let Some((s, e)) = self.selection_start {
+                                self.selection_start = Some((s, e + 4));
+                            }
+                            if let Some((s, e)) = self.selection_end {
+                                self.selection_end = Some((s, e + 4));
+                            }
+                            self.cursor_col += 4;
+                            state.set_modified(true);
+                            return true;
+                        }
+                    }
+                    // Single line selection - delete and insert tab
                     self.delete_selection();
                     state.set_modified(true);
                 }
-                // Record tab as insert of 8 spaces
+                // Record tab as insert of 4 spaces
                 self.record_undo(UndoAction::Insert {
                     line: self.cursor_line,
                     col: self.cursor_col,
-                    text: "        ".to_string(), // 8 spaces
+                    text: "    ".to_string(), // 4 spaces
                 });
-                // Insert spaces (QBasic used 8-space tabs)
-                for _ in 0..8 {
+                // Insert spaces
+                for _ in 0..4 {
                     self.buffer.insert_char(self.cursor_line, self.cursor_col, ' ');
                     self.cursor_col += 1;
                 }
                 state.set_modified(true);
                 true
             }
+            InputEvent::ShiftTab => {
+                // If there's a selection, dedent all selected lines
+                if self.has_selection() {
+                    if let Some(((start_line, _), (end_line, _))) = self.get_selection_bounds() {
+                        for line_num in start_line..=end_line {
+                            if let Some(line) = self.buffer.line(line_num) {
+                                // Remove up to 4 leading spaces
+                                let spaces_to_remove = line.chars()
+                                    .take(4)
+                                    .take_while(|c| *c == ' ')
+                                    .count();
+                                if spaces_to_remove > 0 {
+                                    let new_line = line[spaces_to_remove..].to_string();
+                                    self.buffer.replace_line(line_num, &new_line);
+                                }
+                            }
+                        }
+                        // Adjust cursor
+                        if self.cursor_col >= 4 {
+                            self.cursor_col -= 4;
+                        } else {
+                            self.cursor_col = 0;
+                        }
+                        state.set_modified(true);
+                        return true;
+                    }
+                }
+                // No selection - dedent current line
+                if let Some(line) = self.buffer.line(self.cursor_line) {
+                    let spaces_to_remove = line.chars()
+                        .take(4)
+                        .take_while(|c| *c == ' ')
+                        .count();
+                    if spaces_to_remove > 0 {
+                        let new_line = line[spaces_to_remove..].to_string();
+                        self.buffer.replace_line(self.cursor_line, &new_line);
+                        if self.cursor_col >= spaces_to_remove {
+                            self.cursor_col -= spaces_to_remove;
+                        } else {
+                            self.cursor_col = 0;
+                        }
+                        state.set_modified(true);
+                    }
+                }
+                true
+            }
             InputEvent::CursorUp => {
-                self.clear_selection();
-                if self.cursor_line > 0 {
-                    self.cursor_line -= 1;
-                    self.clamp_cursor();
+                if self.keyboard_select_mode {
+                    // Extend selection in keyboard select mode
+                    if self.cursor_line > 0 {
+                        self.cursor_line -= 1;
+                        self.clamp_cursor();
+                    }
+                    self.selection_end = Some((self.cursor_line, self.cursor_col));
+                } else {
+                    self.clear_selection();
+                    if self.cursor_line > 0 {
+                        self.cursor_line -= 1;
+                        self.clamp_cursor();
+                    }
                 }
                 true
             }
             InputEvent::CursorDown => {
-                self.clear_selection();
-                if self.cursor_line + 1 < self.buffer.line_count() {
-                    self.cursor_line += 1;
-                    self.clamp_cursor();
+                if self.keyboard_select_mode {
+                    if self.cursor_line + 1 < self.buffer.line_count() {
+                        self.cursor_line += 1;
+                        self.clamp_cursor();
+                    }
+                    self.selection_end = Some((self.cursor_line, self.cursor_col));
+                } else {
+                    self.clear_selection();
+                    if self.cursor_line + 1 < self.buffer.line_count() {
+                        self.cursor_line += 1;
+                        self.clamp_cursor();
+                    }
                 }
                 true
             }
             InputEvent::CursorLeft => {
-                self.clear_selection();
-                if self.cursor_col > 0 {
-                    self.cursor_col -= 1;
-                } else if self.cursor_line > 0 {
-                    self.cursor_line -= 1;
-                    self.cursor_col = self.buffer.line(self.cursor_line).map(|l| l.len()).unwrap_or(0);
+                if self.keyboard_select_mode {
+                    if self.cursor_col > 0 {
+                        self.cursor_col -= 1;
+                    } else if self.cursor_line > 0 {
+                        self.cursor_line -= 1;
+                        self.cursor_col = self.buffer.line(self.cursor_line).map(|l| l.len()).unwrap_or(0);
+                    }
+                    self.selection_end = Some((self.cursor_line, self.cursor_col));
+                } else {
+                    self.clear_selection();
+                    if self.cursor_col > 0 {
+                        self.cursor_col -= 1;
+                    } else if self.cursor_line > 0 {
+                        self.cursor_line -= 1;
+                        self.cursor_col = self.buffer.line(self.cursor_line).map(|l| l.len()).unwrap_or(0);
+                    }
                 }
                 true
             }
             InputEvent::CursorRight => {
-                self.clear_selection();
-                let line_len = self.buffer.line(self.cursor_line).map(|l| l.len()).unwrap_or(0);
-                if self.cursor_col < line_len {
-                    self.cursor_col += 1;
-                } else if self.cursor_line + 1 < self.buffer.line_count() {
-                    self.cursor_line += 1;
-                    self.cursor_col = 0;
+                if self.keyboard_select_mode {
+                    let line_len = self.buffer.line(self.cursor_line).map(|l| l.len()).unwrap_or(0);
+                    if self.cursor_col < line_len {
+                        self.cursor_col += 1;
+                    } else if self.cursor_line + 1 < self.buffer.line_count() {
+                        self.cursor_line += 1;
+                        self.cursor_col = 0;
+                    }
+                    self.selection_end = Some((self.cursor_line, self.cursor_col));
+                } else {
+                    self.clear_selection();
+                    let line_len = self.buffer.line(self.cursor_line).map(|l| l.len()).unwrap_or(0);
+                    if self.cursor_col < line_len {
+                        self.cursor_col += 1;
+                    } else if self.cursor_line + 1 < self.buffer.line_count() {
+                        self.cursor_line += 1;
+                        self.cursor_col = 0;
+                    }
                 }
                 true
             }
             InputEvent::Home => {
-                self.clear_selection();
-                self.cursor_col = 0;
+                if self.keyboard_select_mode {
+                    self.cursor_col = 0;
+                    self.selection_end = Some((self.cursor_line, self.cursor_col));
+                } else {
+                    self.clear_selection();
+                    self.cursor_col = 0;
+                }
                 true
             }
             InputEvent::End => {
-                self.clear_selection();
-                self.cursor_col = self.buffer.line(self.cursor_line).map(|l| l.len()).unwrap_or(0);
+                if self.keyboard_select_mode {
+                    self.cursor_col = self.buffer.line(self.cursor_line).map(|l| l.len()).unwrap_or(0);
+                    self.selection_end = Some((self.cursor_line, self.cursor_col));
+                } else {
+                    self.clear_selection();
+                    self.cursor_col = self.buffer.line(self.cursor_line).map(|l| l.len()).unwrap_or(0);
+                }
                 true
             }
             InputEvent::PageUp => {
-                self.clear_selection();
-                self.cursor_line = self.cursor_line.saturating_sub(20);
-                self.clamp_cursor();
+                if self.keyboard_select_mode {
+                    self.cursor_line = self.cursor_line.saturating_sub(20);
+                    self.clamp_cursor();
+                    self.selection_end = Some((self.cursor_line, self.cursor_col));
+                } else {
+                    self.clear_selection();
+                    self.cursor_line = self.cursor_line.saturating_sub(20);
+                    self.clamp_cursor();
+                }
                 true
             }
             InputEvent::PageDown => {
-                self.clear_selection();
-                self.cursor_line = (self.cursor_line + 20).min(self.buffer.line_count().saturating_sub(1));
-                self.clamp_cursor();
+                if self.keyboard_select_mode {
+                    self.cursor_line = (self.cursor_line + 20).min(self.buffer.line_count().saturating_sub(1));
+                    self.clamp_cursor();
+                    self.selection_end = Some((self.cursor_line, self.cursor_col));
+                } else {
+                    self.clear_selection();
+                    self.cursor_line = (self.cursor_line + 20).min(self.buffer.line_count().saturating_sub(1));
+                    self.clamp_cursor();
+                }
                 true
             }
             // Shift+Arrow keys for keyboard selection
@@ -944,19 +1747,144 @@ impl Editor {
                 self.selection_end = Some((self.cursor_line, self.cursor_col));
                 true
             }
-            InputEvent::ShiftSpace => {
-                // Shift+Space extends selection like Shift+Right
+            // Ctrl+Arrow keys for keyboard selection
+            InputEvent::CtrlUp => {
                 if !self.has_selection() {
                     self.selection_start = Some((self.cursor_line, self.cursor_col));
                 }
-                let line_len = self.buffer.line(self.cursor_line).map(|l| l.len()).unwrap_or(0);
-                if self.cursor_col < line_len {
-                    self.cursor_col += 1;
-                } else if self.cursor_line + 1 < self.buffer.line_count() {
-                    self.cursor_line += 1;
-                    self.cursor_col = 0;
+                if self.cursor_line > 0 {
+                    self.cursor_line -= 1;
+                    self.clamp_cursor();
                 }
                 self.selection_end = Some((self.cursor_line, self.cursor_col));
+                true
+            }
+            InputEvent::CtrlDown => {
+                if !self.has_selection() {
+                    self.selection_start = Some((self.cursor_line, self.cursor_col));
+                }
+                if self.cursor_line + 1 < self.buffer.line_count() {
+                    self.cursor_line += 1;
+                    self.clamp_cursor();
+                }
+                self.selection_end = Some((self.cursor_line, self.cursor_col));
+                true
+            }
+            InputEvent::CtrlLeft => {
+                // Move by word left (no selection)
+                self.clear_selection();
+                self.move_word_left();
+                true
+            }
+            InputEvent::CtrlRight => {
+                // Move by word right (no selection)
+                self.clear_selection();
+                self.move_word_right();
+                true
+            }
+            InputEvent::CtrlHome => {
+                // Go to start of document
+                self.clear_selection();
+                self.cursor_line = 0;
+                self.cursor_col = 0;
+                self.scroll_row = 0;
+                true
+            }
+            InputEvent::CtrlEnd => {
+                // Go to end of document
+                self.clear_selection();
+                self.cursor_line = self.buffer.line_count().saturating_sub(1);
+                self.cursor_col = self.buffer.line(self.cursor_line).map(|l| l.len()).unwrap_or(0);
+                true
+            }
+            InputEvent::CtrlBackspace => {
+                // Delete word left
+                if self.has_selection() {
+                    self.delete_selection();
+                } else {
+                    self.delete_word_left();
+                }
+                state.set_modified(true);
+                true
+            }
+            InputEvent::CtrlDelete => {
+                // Delete word right
+                if self.has_selection() {
+                    self.delete_selection();
+                } else {
+                    self.delete_word_right();
+                }
+                state.set_modified(true);
+                true
+            }
+            InputEvent::CtrlShiftLeft => {
+                // Select by word left
+                if !self.has_selection() {
+                    self.selection_start = Some((self.cursor_line, self.cursor_col));
+                }
+                self.move_word_left();
+                self.selection_end = Some((self.cursor_line, self.cursor_col));
+                true
+            }
+            InputEvent::CtrlShiftRight => {
+                // Select by word right
+                if !self.has_selection() {
+                    self.selection_start = Some((self.cursor_line, self.cursor_col));
+                }
+                self.move_word_right();
+                self.selection_end = Some((self.cursor_line, self.cursor_col));
+                true
+            }
+            InputEvent::CtrlShiftHome => {
+                // Select to start of document
+                if !self.has_selection() {
+                    self.selection_start = Some((self.cursor_line, self.cursor_col));
+                }
+                self.cursor_line = 0;
+                self.cursor_col = 0;
+                self.selection_end = Some((self.cursor_line, self.cursor_col));
+                true
+            }
+            InputEvent::CtrlShiftEnd => {
+                // Select to end of document
+                if !self.has_selection() {
+                    self.selection_start = Some((self.cursor_line, self.cursor_col));
+                }
+                self.cursor_line = self.buffer.line_count().saturating_sub(1);
+                self.cursor_col = self.buffer.line(self.cursor_line).map(|l| l.len()).unwrap_or(0);
+                self.selection_end = Some((self.cursor_line, self.cursor_col));
+                true
+            }
+            InputEvent::CtrlPageUp => {
+                if !self.has_selection() {
+                    self.selection_start = Some((self.cursor_line, self.cursor_col));
+                }
+                self.cursor_line = self.cursor_line.saturating_sub(20);
+                self.clamp_cursor();
+                self.selection_end = Some((self.cursor_line, self.cursor_col));
+                true
+            }
+            InputEvent::CtrlPageDown => {
+                if !self.has_selection() {
+                    self.selection_start = Some((self.cursor_line, self.cursor_col));
+                }
+                self.cursor_line = (self.cursor_line + 20).min(self.buffer.line_count().saturating_sub(1));
+                self.clamp_cursor();
+                self.selection_end = Some((self.cursor_line, self.cursor_col));
+                true
+            }
+            InputEvent::ShiftSpace | InputEvent::CtrlSpace => {
+                // Ctrl+Space or Shift+Space toggles keyboard selection mode
+                if self.keyboard_select_mode {
+                    // If already in select mode, turn it off and clear selection
+                    self.keyboard_select_mode = false;
+                    self.clear_selection();
+                } else {
+                    // Start selection mode
+                    self.keyboard_select_mode = true;
+                    self.selection_start = Some((self.cursor_line, self.cursor_col));
+                    self.selection_end = Some((self.cursor_line, self.cursor_col));
+                }
                 true
             }
             InputEvent::CtrlA => {
@@ -982,6 +1910,41 @@ impl Editor {
             InputEvent::ScrollDown { .. } => {
                 // Scroll down 3 lines
                 self.scroll_row += 3;
+                true
+            }
+            InputEvent::Escape => {
+                // Clear keyboard select mode and selection
+                if self.keyboard_select_mode || self.has_selection() {
+                    self.keyboard_select_mode = false;
+                    self.clear_selection();
+                    true
+                } else {
+                    false  // Let main.rs handle other Escape uses
+                }
+            }
+            InputEvent::CtrlD => {
+                // Duplicate current line
+                self.duplicate_line();
+                true
+            }
+            InputEvent::CtrlShiftK => {
+                // Delete current line
+                self.delete_line();
+                true
+            }
+            InputEvent::AltUp => {
+                // Move line up
+                self.move_line_up();
+                true
+            }
+            InputEvent::AltDown => {
+                // Move line down
+                self.move_line_down();
+                true
+            }
+            InputEvent::CtrlSlash => {
+                // Toggle comment
+                self.toggle_comment();
                 true
             }
             _ => false,

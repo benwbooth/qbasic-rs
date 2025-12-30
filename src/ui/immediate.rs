@@ -34,7 +34,7 @@ impl ImmediateWindow {
     }
 
     /// Draw the immediate window
-    pub fn draw(&self, screen: &mut Screen, _state: &AppState, bounds: Rect, has_focus: bool) {
+    pub fn draw(&self, screen: &mut Screen, state: &AppState, bounds: Rect, has_focus: bool) {
         let row = bounds.y + 1; // 1-based row
         let col = bounds.x + 1;
         let width = bounds.width;
@@ -44,10 +44,20 @@ impl ImmediateWindow {
         let border_fg = if has_focus { Color::White } else { Color::LightGray };
         screen.draw_box(row, col, width, height, border_fg, Color::Blue);
 
-        // Title
+        // Title (centered)
         let title = " Immediate ";
-        let title_x = col + 2;
+        let title_x = col + (width.saturating_sub(title.len() as u16)) / 2;
         screen.write_str(row, title_x, title, border_fg, Color::Blue);
+
+        // Maximize/Minimize button at right of title bar
+        let button_x = col + width - 4;
+        if state.immediate_maximized {
+            // Show restore/minimize button when maximized (down arrow)
+            screen.write_str(row, button_x, "[↓]", Color::White, Color::Blue);
+        } else {
+            // Show maximize button when normal (up arrow)
+            screen.write_str(row, button_x, "[↑]", Color::White, Color::Blue);
+        }
 
         // Content area
         let content_row = row + 1;
@@ -96,6 +106,7 @@ impl ImmediateWindow {
         if has_focus {
             let cursor_x = input_start + (self.cursor - display_start) as u16;
             screen.set_cursor(input_row, cursor_x);
+            screen.set_cursor_style(crate::terminal::CursorStyle::BlinkingUnderline);
             screen.set_cursor_visible(true);
         }
     }

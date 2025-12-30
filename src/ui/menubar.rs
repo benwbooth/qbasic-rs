@@ -182,7 +182,7 @@ impl MenuBar {
             // Title with hotkey highlighting
             for (j, ch) in menu.title.chars().enumerate() {
                 let ch_fg = if ch.to_ascii_lowercase() == menu.hotkey.to_ascii_lowercase() {
-                    Color::Red
+                    Color::White
                 } else {
                     fg
                 };

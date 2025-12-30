@@ -1,7 +1,7 @@
 //! Double-buffered screen rendering system
 //! Minimizes flicker by only updating changed cells
 
-use crate::terminal::{Color, Terminal};
+use crate::terminal::{Color, Terminal, CursorStyle};
 use std::io;
 
 /// A single cell on the screen
@@ -37,6 +37,7 @@ pub struct Screen {
     cursor_row: u16,
     cursor_col: u16,
     cursor_visible: bool,
+    cursor_style: CursorStyle,
 }
 
 impl Screen {
@@ -53,6 +54,7 @@ impl Screen {
             cursor_row: 1,
             cursor_col: 1,
             cursor_visible: true,
+            cursor_style: CursorStyle::BlinkingUnderline, // Default to blinking underline
         }
     }
 
@@ -230,6 +232,11 @@ impl Screen {
         self.cursor_visible = visible;
     }
 
+    /// Set cursor style
+    pub fn set_cursor_style(&mut self, style: CursorStyle) {
+        self.cursor_style = style;
+    }
+
     /// Flush changes to the terminal (only updates changed cells)
     pub fn flush(&mut self, term: &mut Terminal) -> io::Result<()> {
         let mut last_fg = Color::Black;
@@ -275,6 +282,7 @@ impl Screen {
         // Position cursor
         if self.cursor_visible {
             term.goto(self.cursor_row, self.cursor_col)?;
+            term.set_cursor_style(self.cursor_style)?;
             term.show_cursor()?;
         } else {
             term.hide_cursor()?;

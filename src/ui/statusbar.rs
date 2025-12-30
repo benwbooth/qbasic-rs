@@ -30,6 +30,7 @@ impl StatusBar {
                 RunState::Running => " Running... ".to_string(),
                 RunState::Paused => " Paused ".to_string(),
                 RunState::Stepping => " Step ".to_string(),
+                RunState::Finished => " Finished ".to_string(),
             }
         };
 

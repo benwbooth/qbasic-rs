@@ -61,6 +61,39 @@ impl Color {
         let (r, g, b) = self.to_rgb();
         format!("48;2;{};{};{}", r, g, b)
     }
+
+    /// Invert the RGB values and find the closest matching palette color
+    pub fn invert(self) -> Color {
+        let (r, g, b) = self.to_rgb();
+        let inv_r = 255 - r;
+        let inv_g = 255 - g;
+        let inv_b = 255 - b;
+
+        // Find closest color in palette
+        let colors = [
+            Color::Black, Color::Blue, Color::Green, Color::Cyan,
+            Color::Red, Color::Magenta, Color::Brown, Color::LightGray,
+            Color::DarkGray, Color::LightBlue, Color::LightGreen, Color::LightCyan,
+            Color::LightRed, Color::LightMagenta, Color::Yellow, Color::White,
+        ];
+
+        let mut best = Color::Black;
+        let mut best_dist = u32::MAX;
+
+        for color in colors {
+            let (cr, cg, cb) = color.to_rgb();
+            let dr = (inv_r as i32 - cr as i32).abs() as u32;
+            let dg = (inv_g as i32 - cg as i32).abs() as u32;
+            let db = (inv_b as i32 - cb as i32).abs() as u32;
+            let dist = dr * dr + dg * dg + db * db;
+            if dist < best_dist {
+                best_dist = dist;
+                best = color;
+            }
+        }
+
+        best
+    }
 }
 
 /// Mouse button
@@ -92,6 +125,7 @@ pub enum Key {
     Backspace,
     Delete,
     Tab,
+    ShiftTab,
     Up,
     Down,
     Left,
@@ -109,6 +143,27 @@ pub enum Key {
     ShiftHome,
     ShiftEnd,
     ShiftSpace,
+    CtrlSpace,
+    // Ctrl+navigation keys
+    CtrlUp,
+    CtrlDown,
+    CtrlLeft,
+    CtrlRight,
+    CtrlHome,
+    CtrlEnd,
+    CtrlPageUp,
+    CtrlPageDown,
+    CtrlBackspace,
+    CtrlDelete,
+    // Ctrl+Shift+navigation
+    CtrlShiftLeft,
+    CtrlShiftRight,
+    CtrlShiftHome,
+    CtrlShiftEnd,
+    CtrlShiftK,
+    // Alt+navigation
+    AltUp,
+    AltDown,
     F(u8), // F1-F12
     Alt(char),
     Ctrl(char),
@@ -145,6 +200,8 @@ impl Terminal {
         term.write_raw("\x1b[?25l")?; // Hide cursor
         term.write_raw("\x1b[?1002h")?; // Enable button-event mouse tracking (includes drag)
         term.write_raw("\x1b[?1006h")?; // Enable SGR extended mouse mode
+        term.write_raw("\x1b[>4;2m")?; // Enable modifyOtherKeys mode 2 (xterm)
+        term.write_raw("\x1b[>1u")?; // Enable Kitty keyboard protocol
         term.write_raw("\x1b[2J")?; // Clear screen
         term.write_raw("\x1b[H")?; // Home cursor
 
@@ -258,24 +315,33 @@ impl Terminal {
         self.write_raw("\x1b[?25l")
     }
 
-    /// Set cursor style (block, underline, bar)
+    /// Set cursor style (block, underline, bar - each with blinking or steady)
     pub fn set_cursor_style(&mut self, style: CursorStyle) -> io::Result<()> {
         let code = match style {
-            CursorStyle::Block => "\x1b[2 q",
-            CursorStyle::Underline => "\x1b[4 q",
-            CursorStyle::Bar => "\x1b[6 q",
+            CursorStyle::BlinkingBlock => "\x1b[1 q",
+            CursorStyle::SteadyBlock => "\x1b[2 q",
+            CursorStyle::BlinkingUnderline => "\x1b[3 q",
+            CursorStyle::SteadyUnderline => "\x1b[4 q",
+            CursorStyle::BlinkingBar => "\x1b[5 q",
+            CursorStyle::SteadyBar => "\x1b[6 q",
         };
         self.write_raw(code)
     }
 
     /// Read a key from input (non-blocking)
     pub fn read_key(&self) -> io::Result<Option<Key>> {
+        let (key, _bytes) = self.read_key_raw()?;
+        Ok(key)
+    }
+
+    /// Read key and return both the parsed key and raw bytes (for debugging)
+    pub fn read_key_raw(&self) -> io::Result<(Option<Key>, Vec<u8>)> {
         let mut buf = [0u8; 32];
         let mut stdin = io::stdin();
 
         let n = stdin.read(&mut buf)?;
         if n == 0 {
-            return Ok(None);
+            return Ok((None, vec![]));
         }
 
         // If we got ESC, try to read more bytes (for escape sequences)
@@ -288,7 +354,8 @@ impl Terminal {
             }
         }
 
-        Ok(Some(Self::parse_key(&buf[..total])))
+        let bytes = buf[..total].to_vec();
+        Ok((Some(Self::parse_key(&buf[..total])), bytes))
     }
 
     /// Parse raw bytes into a Key
@@ -306,6 +373,7 @@ impl Terminal {
             [0x1b] => Key::Escape,
             [0x7f] | [0x08] => Key::Backspace,
             [b'\t'] => Key::Tab,
+            [0x00] => Key::CtrlSpace, // Ctrl+Space sends NUL
 
             // Ctrl+letter (0x01-0x1a = Ctrl+A through Ctrl+Z)
             [c] if *c >= 1 && *c <= 26 => Key::Ctrl((b'a' + c - 1) as char),
@@ -322,6 +390,9 @@ impl Terminal {
                 }
                 Key::Unknown(buf.to_vec())
             }
+
+            // Shift+Tab (backtab)
+            [0x1b, b'[', b'Z'] => Key::ShiftTab,
 
             // Escape sequences
             [0x1b, b'[', b'A'] => Key::Up,
@@ -348,6 +419,37 @@ impl Terminal {
             // CSI 32 ; 2 u  or  CSI 27 ; 2 ; 32 ~
             [0x1b, b'[', b'3', b'2', b';', b'2', b'u'] => Key::ShiftSpace,
             [0x1b, b'[', b'2', b'7', b';', b'2', b';', b'3', b'2', b'~'] => Key::ShiftSpace,
+
+            // Ctrl+Arrow keys (modifier 5 = ctrl)
+            [0x1b, b'[', b'1', b';', b'5', b'A'] => Key::CtrlUp,
+            [0x1b, b'[', b'1', b';', b'5', b'B'] => Key::CtrlDown,
+            [0x1b, b'[', b'1', b';', b'5', b'C'] => Key::CtrlRight,
+            [0x1b, b'[', b'1', b';', b'5', b'D'] => Key::CtrlLeft,
+            [0x1b, b'[', b'1', b';', b'5', b'H'] => Key::CtrlHome,
+            [0x1b, b'[', b'1', b';', b'5', b'F'] => Key::CtrlEnd,
+            [0x1b, b'[', b'5', b';', b'5', b'~'] => Key::CtrlPageUp,
+            [0x1b, b'[', b'6', b';', b'5', b'~'] => Key::CtrlPageDown,
+
+            // Ctrl+Backspace and Ctrl+Delete
+            [0x1f] => Key::CtrlBackspace,  // Ctrl+Backspace sends 0x1f
+            [0x08] => Key::CtrlBackspace,  // Some terminals send 0x08
+            [0x1b, b'[', b'3', b';', b'5', b'~'] => Key::CtrlDelete,
+
+            // Ctrl+Shift+Arrow keys (modifier 6 = ctrl+shift)
+            [0x1b, b'[', b'1', b';', b'6', b'C'] => Key::CtrlShiftRight,
+            [0x1b, b'[', b'1', b';', b'6', b'D'] => Key::CtrlShiftLeft,
+            [0x1b, b'[', b'1', b';', b'6', b'H'] => Key::CtrlShiftHome,
+            [0x1b, b'[', b'1', b';', b'6', b'F'] => Key::CtrlShiftEnd,
+
+            // Ctrl+Shift+K (delete line)
+            [0x0b] => Key::CtrlShiftK, // Ctrl+K sends 0x0b, Ctrl+Shift+K may vary
+
+            // Alt+Arrow keys (modifier 3 = alt)
+            [0x1b, b'[', b'1', b';', b'3', b'A'] => Key::AltUp,
+            [0x1b, b'[', b'1', b';', b'3', b'B'] => Key::AltDown,
+            // Alt+arrows without modifier (ESC + arrow)
+            [0x1b, 0x1b, b'[', b'A'] => Key::AltUp,
+            [0x1b, 0x1b, b'[', b'B'] => Key::AltDown,
 
             // Function keys
             [0x1b, b'O', b'P'] | [0x1b, b'[', b'1', b'1', b'~'] => Key::F(1),
@@ -535,10 +637,14 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
+        // Disable extended keyboard protocols
+        let _ = self.write_raw("\x1b[<u"); // Disable Kitty keyboard protocol
+        let _ = self.write_raw("\x1b[>4;0m"); // Disable modifyOtherKeys
         // Disable mouse tracking
         let _ = self.write_raw("\x1b[?1006l");
         let _ = self.write_raw("\x1b[?1002l");
         // Restore terminal state
+        let _ = self.write_raw("\x1b[0 q"); // Reset cursor to terminal default
         let _ = self.show_cursor();
         let _ = self.reset_colors();
         let _ = self.clear();
@@ -550,7 +656,10 @@ impl Drop for Terminal {
 
 #[derive(Clone, Copy, Debug)]
 pub enum CursorStyle {
-    Block,
-    Underline,
-    Bar,
+    BlinkingBlock,
+    SteadyBlock,
+    BlinkingUnderline,
+    SteadyUnderline,
+    BlinkingBar,
+    SteadyBar,
 }

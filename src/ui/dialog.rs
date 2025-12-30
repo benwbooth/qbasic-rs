@@ -27,6 +27,12 @@ impl Dialog {
             DialogType::NewProgram => Self::draw_new_program(screen, state, width, height, selected),
             DialogType::Print => Self::draw_print_dialog(screen, state, width, height, selected),
             DialogType::Welcome => Self::draw_welcome(screen, state, width, height, selected),
+            DialogType::NewSub => Self::draw_new_sub(screen, state, width, height, selected),
+            DialogType::NewFunction => Self::draw_new_function(screen, state, width, height, selected),
+            DialogType::FindLabel => Self::draw_find_label(screen, state, width, height, selected),
+            DialogType::CommandArgs => Self::draw_command_args(screen, state, width, height, selected),
+            DialogType::HelpPath => Self::draw_help_path(screen, state, width, height, selected),
+            DialogType::DisplayOptions => Self::draw_display_options(screen, state, width, height, selected),
         }
     }
 
@@ -538,6 +544,273 @@ impl Dialog {
                 LayoutItem::spacer(),
             ]).fixed_height(1),
             LayoutItem::spacer().height(Size::Flex(1)),
+        ]);
+        let bounds = Rect::new(x, y, width, height);
+        state.dialog_layout = Some(compute_layout(&layout_item, bounds));
+    }
+
+    fn draw_new_sub(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, selected: usize) {
+        let x = state.dialog_x;
+        let y = state.dialog_y;
+        let width = state.dialog_width;
+        let height = state.dialog_height;
+
+        Self::draw_dialog_box_at(screen, x, y, width, height, "New SUB");
+
+        screen.write_str(y + 2, x + 2, "SUB name:", Color::Black, Color::LightGray);
+        screen.fill(y + 2, x + 13, width - 16, 1, ' ', Color::Black, Color::White);
+
+        // Draw the input text
+        let text = &state.dialog_find_text; // Reuse dialog_find_text for input
+        let max_len = (width - 17) as usize;
+        let display_text: String = text.chars().take(max_len).collect();
+        screen.write_str(y + 2, x + 13, &display_text, Color::Black, Color::White);
+
+        // Draw cursor
+        let cursor_x = x + 13 + state.dialog_input_cursor.min(max_len) as u16;
+        let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
+        screen.write_str(y + 2, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+
+        Self::draw_button(screen, y + height - 2, x + 8, "OK", selected == 0);
+        Self::draw_button(screen, y + height - 2, x + 22, "Cancel", selected == 1);
+
+        let layout_item = LayoutItem::vstack(vec![
+            LayoutItem::leaf("title_bar").fixed_height(1),
+            LayoutItem::spacer().height(Size::Flex(1)),
+            LayoutItem::hstack(vec![
+                LayoutItem::spacer().fixed_width(8),
+                LayoutItem::leaf("ok_button").fixed_width(8),
+                LayoutItem::spacer().fixed_width(6),
+                LayoutItem::leaf("cancel_button").fixed_width(11),
+                LayoutItem::spacer(),
+            ]).fixed_height(1),
+            LayoutItem::spacer().fixed_height(1),
+        ]);
+        let bounds = Rect::new(x, y, width, height);
+        state.dialog_layout = Some(compute_layout(&layout_item, bounds));
+    }
+
+    fn draw_new_function(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, selected: usize) {
+        let x = state.dialog_x;
+        let y = state.dialog_y;
+        let width = state.dialog_width;
+        let height = state.dialog_height;
+
+        Self::draw_dialog_box_at(screen, x, y, width, height, "New FUNCTION");
+
+        screen.write_str(y + 2, x + 2, "FUNCTION name:", Color::Black, Color::LightGray);
+        screen.fill(y + 2, x + 18, width - 21, 1, ' ', Color::Black, Color::White);
+
+        // Draw the input text
+        let text = &state.dialog_find_text;
+        let max_len = (width - 22) as usize;
+        let display_text: String = text.chars().take(max_len).collect();
+        screen.write_str(y + 2, x + 18, &display_text, Color::Black, Color::White);
+
+        // Draw cursor
+        let cursor_x = x + 18 + state.dialog_input_cursor.min(max_len) as u16;
+        let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
+        screen.write_str(y + 2, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+
+        Self::draw_button(screen, y + height - 2, x + 8, "OK", selected == 0);
+        Self::draw_button(screen, y + height - 2, x + 22, "Cancel", selected == 1);
+
+        let layout_item = LayoutItem::vstack(vec![
+            LayoutItem::leaf("title_bar").fixed_height(1),
+            LayoutItem::spacer().height(Size::Flex(1)),
+            LayoutItem::hstack(vec![
+                LayoutItem::spacer().fixed_width(8),
+                LayoutItem::leaf("ok_button").fixed_width(8),
+                LayoutItem::spacer().fixed_width(6),
+                LayoutItem::leaf("cancel_button").fixed_width(11),
+                LayoutItem::spacer(),
+            ]).fixed_height(1),
+            LayoutItem::spacer().fixed_height(1),
+        ]);
+        let bounds = Rect::new(x, y, width, height);
+        state.dialog_layout = Some(compute_layout(&layout_item, bounds));
+    }
+
+    fn draw_find_label(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, selected: usize) {
+        let x = state.dialog_x;
+        let y = state.dialog_y;
+        let width = state.dialog_width;
+        let height = state.dialog_height;
+
+        Self::draw_dialog_box_at(screen, x, y, width, height, "Find Label");
+
+        screen.write_str(y + 2, x + 2, "Label:", Color::Black, Color::LightGray);
+        screen.fill(y + 2, x + 10, width - 13, 1, ' ', Color::Black, Color::White);
+
+        // Draw the input text
+        let text = &state.dialog_find_text;
+        let max_len = (width - 14) as usize;
+        let display_text: String = text.chars().take(max_len).collect();
+        screen.write_str(y + 2, x + 10, &display_text, Color::Black, Color::White);
+
+        // Draw cursor
+        let cursor_x = x + 10 + state.dialog_input_cursor.min(max_len) as u16;
+        let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
+        screen.write_str(y + 2, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+
+        Self::draw_button(screen, y + height - 2, x + 8, "OK", selected == 0);
+        Self::draw_button(screen, y + height - 2, x + 22, "Cancel", selected == 1);
+
+        let layout_item = LayoutItem::vstack(vec![
+            LayoutItem::leaf("title_bar").fixed_height(1),
+            LayoutItem::spacer().height(Size::Flex(1)),
+            LayoutItem::hstack(vec![
+                LayoutItem::spacer().fixed_width(8),
+                LayoutItem::leaf("ok_button").fixed_width(8),
+                LayoutItem::spacer().fixed_width(6),
+                LayoutItem::leaf("cancel_button").fixed_width(11),
+                LayoutItem::spacer(),
+            ]).fixed_height(1),
+            LayoutItem::spacer().fixed_height(1),
+        ]);
+        let bounds = Rect::new(x, y, width, height);
+        state.dialog_layout = Some(compute_layout(&layout_item, bounds));
+    }
+
+    fn draw_command_args(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, selected: usize) {
+        let x = state.dialog_x;
+        let y = state.dialog_y;
+        let width = state.dialog_width;
+        let height = state.dialog_height;
+
+        Self::draw_dialog_box_at(screen, x, y, width, height, "Modify COMMAND$");
+
+        screen.write_str(y + 2, x + 2, "Command line:", Color::Black, Color::LightGray);
+        screen.fill(y + 2, x + 17, width - 20, 1, ' ', Color::Black, Color::White);
+
+        // Draw the input text (use command_args instead of dialog_find_text)
+        let text = &state.command_args;
+        let max_len = (width - 21) as usize;
+        let display_text: String = text.chars().take(max_len).collect();
+        screen.write_str(y + 2, x + 17, &display_text, Color::Black, Color::White);
+
+        // Draw cursor
+        let cursor_x = x + 17 + state.dialog_input_cursor.min(max_len) as u16;
+        let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
+        screen.write_str(y + 2, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+
+        Self::draw_button(screen, y + height - 2, x + 12, "OK", selected == 0);
+        Self::draw_button(screen, y + height - 2, x + 28, "Cancel", selected == 1);
+
+        let layout_item = LayoutItem::vstack(vec![
+            LayoutItem::leaf("title_bar").fixed_height(1),
+            LayoutItem::spacer().height(Size::Flex(1)),
+            LayoutItem::hstack(vec![
+                LayoutItem::spacer().fixed_width(12),
+                LayoutItem::leaf("ok_button").fixed_width(8),
+                LayoutItem::spacer().fixed_width(8),
+                LayoutItem::leaf("cancel_button").fixed_width(11),
+                LayoutItem::spacer(),
+            ]).fixed_height(1),
+            LayoutItem::spacer().fixed_height(1),
+        ]);
+        let bounds = Rect::new(x, y, width, height);
+        state.dialog_layout = Some(compute_layout(&layout_item, bounds));
+    }
+
+    fn draw_help_path(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, selected: usize) {
+        let x = state.dialog_x;
+        let y = state.dialog_y;
+        let width = state.dialog_width;
+        let height = state.dialog_height;
+
+        Self::draw_dialog_box_at(screen, x, y, width, height, "Help Path");
+
+        screen.write_str(y + 2, x + 2, "Path:", Color::Black, Color::LightGray);
+        screen.fill(y + 2, x + 9, width - 12, 1, ' ', Color::Black, Color::White);
+
+        // Draw the input text
+        let text = &state.help_path;
+        let max_len = (width - 13) as usize;
+        let display_text: String = text.chars().take(max_len).collect();
+        screen.write_str(y + 2, x + 9, &display_text, Color::Black, Color::White);
+
+        // Draw cursor
+        let cursor_x = x + 9 + state.dialog_input_cursor.min(max_len) as u16;
+        let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
+        screen.write_str(y + 2, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+
+        Self::draw_button(screen, y + height - 2, x + 12, "OK", selected == 0);
+        Self::draw_button(screen, y + height - 2, x + 28, "Cancel", selected == 1);
+
+        let layout_item = LayoutItem::vstack(vec![
+            LayoutItem::leaf("title_bar").fixed_height(1),
+            LayoutItem::spacer().height(Size::Flex(1)),
+            LayoutItem::hstack(vec![
+                LayoutItem::spacer().fixed_width(12),
+                LayoutItem::leaf("ok_button").fixed_width(8),
+                LayoutItem::spacer().fixed_width(8),
+                LayoutItem::leaf("cancel_button").fixed_width(11),
+                LayoutItem::spacer(),
+            ]).fixed_height(1),
+            LayoutItem::spacer().fixed_height(1),
+        ]);
+        let bounds = Rect::new(x, y, width, height);
+        state.dialog_layout = Some(compute_layout(&layout_item, bounds));
+    }
+
+    fn draw_display_options(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, selected: usize) {
+        let x = state.dialog_x;
+        let y = state.dialog_y;
+        let width = state.dialog_width;
+        let height = state.dialog_height;
+
+        Self::draw_dialog_box_at(screen, x, y, width, height, "Display");
+
+        // Tab Stops
+        screen.write_str(y + 2, x + 2, "Tab Stops:", Color::Black, Color::LightGray);
+        screen.fill(y + 2, x + 14, 5, 1, ' ', Color::Black, Color::White);
+        let tab_str = state.tab_stops.to_string();
+        screen.write_str(y + 2, x + 14, &tab_str, Color::Black, Color::White);
+
+        // Show cursor on tab stops field if it's the active input field
+        if state.dialog_input_field == 0 {
+            let cursor_x = x + 14 + state.dialog_input_cursor.min(4) as u16;
+            let cursor_char = tab_str.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
+            screen.write_str(y + 2, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+        }
+
+        // Scroll Bars checkbox
+        let scroll_mark = if state.show_scrollbars { "X" } else { " " };
+        let (scroll_fg, scroll_bg) = if state.dialog_input_field == 1 {
+            (Color::White, Color::Black)
+        } else {
+            (Color::Black, Color::LightGray)
+        };
+        screen.write_str(y + 4, x + 2, &format!("[{}] Scroll Bars", scroll_mark), scroll_fg, scroll_bg);
+
+        // Color Scheme
+        screen.write_str(y + 6, x + 2, "Color Scheme:", Color::Black, Color::LightGray);
+        let schemes = ["Classic Blue", "Dark", "Light"];
+        for (i, scheme) in schemes.iter().enumerate() {
+            let mark = if state.color_scheme == i { "o" } else { " " };
+            let (fg, bg) = if state.dialog_input_field == 2 + i {
+                (Color::White, Color::Black)
+            } else {
+                (Color::Black, Color::LightGray)
+            };
+            screen.write_str(y + 7 + i as u16, x + 4, &format!("({}) {}", mark, scheme), fg, bg);
+        }
+
+        Self::draw_button(screen, y + height - 2, x + 12, "OK", selected == 0);
+        Self::draw_button(screen, y + height - 2, x + 28, "Cancel", selected == 1);
+
+        let layout_item = LayoutItem::vstack(vec![
+            LayoutItem::leaf("title_bar").fixed_height(1),
+            LayoutItem::spacer().height(Size::Flex(1)),
+            LayoutItem::hstack(vec![
+                LayoutItem::spacer().fixed_width(12),
+                LayoutItem::leaf("ok_button").fixed_width(8),
+                LayoutItem::spacer().fixed_width(8),
+                LayoutItem::leaf("cancel_button").fixed_width(11),
+                LayoutItem::spacer(),
+            ]).fixed_height(1),
+            LayoutItem::spacer().fixed_height(1),
         ]);
         let bounds = Rect::new(x, y, width, height);
         state.dialog_layout = Some(compute_layout(&layout_item, bounds));

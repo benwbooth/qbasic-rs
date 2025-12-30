@@ -15,7 +15,7 @@ use terminal::{Terminal, Color};
 use screen::Screen;
 use input::InputEvent;
 use state::{AppState, Focus, RunState, DialogType};
-use ui::{MenuBar, Editor, StatusBar, ImmediateWindow, Dialog, Rect, compute_layout, file_dialog_layout};
+use ui::{MenuBar, Editor, StatusBar, ImmediateWindow, OutputWindow, Dialog, Rect, compute_layout, file_dialog_layout};
 use ui::layout::main_screen_layout;
 use ui::menubar::MenuAction;
 use basic::{Lexer, Parser, Interpreter};
@@ -28,6 +28,7 @@ struct App {
     menubar: MenuBar,
     editor: Editor,
     immediate: ImmediateWindow,
+    output: OutputWindow,
     interpreter: Interpreter,
     clipboard: Option<arboard::Clipboard>,
 }
@@ -45,6 +46,7 @@ impl App {
             menubar: MenuBar::new(),
             editor: Editor::new(),
             immediate: ImmediateWindow::new(),
+            output: OutputWindow::new(),
             interpreter: Interpreter::new(),
             clipboard: arboard::Clipboard::new().ok(),
         })
@@ -74,7 +76,12 @@ impl App {
             self.screen.flush(&mut self.terminal)?;
 
             // Handle input
-            if let Some(key) = self.terminal.read_key()? {
+            if let (Some(key), raw_bytes) = self.terminal.read_key_raw()? {
+                // Debug: show raw bytes in status bar
+                if !raw_bytes.is_empty() && raw_bytes[0] == 0x1b {
+                    let hex: Vec<String> = raw_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                    self.state.set_status(format!("Key: [{}]", hex.join(" ")));
+                }
                 let event = InputEvent::from(key);
                 if !self.handle_input(event) {
                     break;
@@ -92,8 +99,20 @@ impl App {
     fn draw(&mut self) {
         let (width, height) = self.screen.size();
 
+        // If output window is visible, draw it fullscreen
+        if self.state.show_output {
+            self.output.draw_fullscreen(&mut self.screen, &self.state);
+            return;
+        }
+
         // Compute main layout
-        let main_layout_item = main_screen_layout(self.state.show_immediate, self.state.immediate_height);
+        let main_layout_item = main_screen_layout(
+            self.state.show_immediate,
+            self.state.immediate_height,
+            self.state.immediate_maximized,
+            false, // output is never shown in split view anymore
+            self.state.output_height,
+        );
         let bounds = Rect::new(0, 0, width, height);
         let layout = compute_layout(&main_layout_item, bounds);
 
@@ -150,6 +169,37 @@ impl App {
     }
 
     fn handle_input(&mut self, event: InputEvent) -> bool {
+        // Debug: show raw bytes for unknown key sequences
+        if let InputEvent::UnknownBytes(bytes) = &event {
+            let hex: Vec<String> = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+            self.state.set_status(format!("Unknown key: [{}]", hex.join(" ")));
+            return true;
+        }
+
+        // If output window is visible fullscreen
+        if self.state.show_output {
+            // While program is running, ignore input (could add INPUT support later)
+            if self.state.run_state == RunState::Running {
+                return true;
+            }
+            // Program finished - wait for a KEYBOARD key press to close output
+            // Ignore mouse events
+            if self.state.run_state == RunState::Finished {
+                let is_keyboard = !matches!(event,
+                    InputEvent::MouseClick { .. } |
+                    InputEvent::MouseDrag { .. } |
+                    InputEvent::MouseRelease { .. } |
+                    InputEvent::ScrollUp { .. } |
+                    InputEvent::ScrollDown { .. }
+                );
+                if is_keyboard {
+                    self.state.show_output = false;
+                    self.state.run_state = RunState::Editing;
+                }
+                return true;
+            }
+        }
+
         // Handle mouse events
         if let InputEvent::MouseClick { row, col } = &event {
             return self.handle_mouse_click(*row, *col);
@@ -175,6 +225,7 @@ impl App {
             self.state.dialog_resizing = false;
             self.state.vscroll_dragging = false;
             self.state.hscroll_dragging = false;
+            self.state.immediate_resize_dragging = false;
             self.editor.end_selection();
             return true;
         }
@@ -192,6 +243,22 @@ impl App {
                 self.state.dialog_width = new_width.max(30).min(screen_width - self.state.dialog_x);
                 self.state.dialog_height = new_height.max(10).min(screen_height - self.state.dialog_y);
 
+                return true;
+            }
+
+            // Handle immediate window resize drag
+            if self.state.immediate_resize_dragging {
+                if let Some(layout) = &self.state.main_layout {
+                    if let Some(imm_rect) = layout.get("immediate") {
+                        // Calculate new height based on drag position
+                        // Dragging up = bigger immediate window
+                        let imm_bottom = imm_rect.y + imm_rect.height;
+                        let new_height = imm_bottom.saturating_sub(*row);
+                        // Clamp to reasonable bounds (3 to half screen)
+                        let max_height = screen_height / 2;
+                        self.state.immediate_height = new_height.max(3).min(max_height);
+                    }
+                }
                 return true;
             }
 
@@ -291,8 +358,25 @@ impl App {
                         self.editor.cursor_col = target_col.min(line_len);
                     }
 
-                    // Update selection end point
-                    self.editor.update_selection();
+                    // Update selection based on click count and anchor
+                    match (self.state.click_count, self.state.selection_anchor) {
+                        (2, Some(anchor)) => {
+                            // Double-click drag: extend by word
+                            self.editor.extend_selection_by_word(anchor);
+                        }
+                        (3, Some(anchor)) => {
+                            // Triple-click drag: extend by line
+                            self.editor.extend_selection_by_line(anchor);
+                        }
+                        (4, Some(anchor)) => {
+                            // Quadruple-click drag: extend by paragraph
+                            self.editor.extend_selection_by_paragraph(anchor);
+                        }
+                        _ => {
+                            // Single click drag: normal character-by-character selection
+                            self.editor.update_selection();
+                        }
+                    }
                     return true;
                 }
             }
@@ -303,7 +387,9 @@ impl App {
             // Check if this is an input dialog
             let is_input_dialog = matches!(
                 self.state.dialog,
-                DialogType::Find | DialogType::Replace | DialogType::GoToLine
+                DialogType::Find | DialogType::Replace | DialogType::GoToLine |
+                DialogType::NewSub | DialogType::NewFunction | DialogType::FindLabel |
+                DialogType::CommandArgs | DialogType::HelpPath | DialogType::DisplayOptions
             );
 
             if is_input_dialog {
@@ -366,6 +452,11 @@ impl App {
             }
             InputEvent::F1 => {
                 self.open_dialog(DialogType::Help("General".to_string()));
+                return true;
+            }
+            InputEvent::F4 => {
+                // Toggle output window
+                self.state.show_output = !self.state.show_output;
                 return true;
             }
             InputEvent::F5 => {
@@ -509,10 +600,14 @@ impl App {
                 }
             }
             (1, 7) => { // New SUB
-                self.state.set_status("New SUB: Not yet implemented");
+                self.state.dialog_find_text.clear();
+                self.state.dialog_input_cursor = 0;
+                self.open_dialog(DialogType::NewSub);
             }
             (1, 8) => { // New FUNCTION
-                self.state.set_status("New FUNCTION: Not yet implemented");
+                self.state.dialog_find_text.clear();
+                self.state.dialog_input_cursor = 0;
+                self.open_dialog(DialogType::NewFunction);
             }
 
             // View menu
@@ -526,7 +621,18 @@ impl App {
                 }
             }
             (2, 2) => { // Output screen (F4)
-                self.state.set_status("Output screen: Not yet implemented");
+                self.state.show_output = !self.state.show_output;
+                if self.state.show_output {
+                    self.state.set_status("Output window shown");
+                } else {
+                    self.state.set_status("Output window hidden");
+                }
+            }
+            (2, 4) => { // Included File
+                self.state.set_status("No included files");
+            }
+            (2, 5) => { // Included Lines
+                self.state.set_status("No included files");
             }
 
             // Search menu
@@ -534,14 +640,17 @@ impl App {
             (3, 1) => self.repeat_find(), // Repeat Last Find (F3)
             (3, 2) => self.open_dialog(DialogType::Replace),
             (3, 3) => { // Label
-                self.state.set_status("Find Label: Not yet implemented");
+                self.state.dialog_find_text.clear();
+                self.state.dialog_input_cursor = 0;
+                self.open_dialog(DialogType::FindLabel);
             }
 
             // Run menu
             (4, 0) | (4, 2) => self.run_program(),
             (4, 1) => self.restart_program(),
             (4, 4) => { // Modify COMMAND$
-                self.state.set_status("Modify COMMAND$: Not yet implemented");
+                self.state.dialog_input_cursor = self.state.command_args.len();
+                self.open_dialog(DialogType::CommandArgs);
             }
 
             // Debug menu
@@ -553,18 +662,35 @@ impl App {
                 self.state.set_status("All breakpoints cleared");
             }
             (5, 6) => { // Set Next Statement
-                self.state.set_status("Set Next Statement: Not yet implemented");
+                if self.state.run_state == RunState::Paused {
+                    // Set the next line to execute to the cursor position
+                    self.state.current_line = Some(self.editor.cursor_line);
+                    self.state.set_status(format!("Next statement set to line {}", self.editor.cursor_line + 1));
+                } else {
+                    self.state.set_status("Must be paused at breakpoint to set next statement");
+                }
             }
 
             // Options menu
             (6, 0) => { // Display
-                self.state.set_status("Display options: Not yet implemented");
+                self.state.dialog_input_field = 0;
+                self.state.dialog_input_cursor = self.state.tab_stops.to_string().len();
+                self.open_dialog(DialogType::DisplayOptions);
             }
             (6, 1) => { // Help Path
-                self.state.set_status("Help Path: Not yet implemented");
+                self.state.dialog_input_cursor = self.state.help_path.len();
+                self.open_dialog(DialogType::HelpPath);
             }
             (6, 2) => { // Syntax Checking toggle
-                self.state.set_status("Syntax Checking: Not yet implemented");
+                self.state.syntax_checking = !self.state.syntax_checking;
+                if self.state.syntax_checking {
+                    self.state.set_status("Syntax checking enabled");
+                    // Run syntax check immediately
+                    self.check_syntax();
+                } else {
+                    self.state.set_status("Syntax checking disabled");
+                    self.state.syntax_errors.clear();
+                }
             }
 
             // Help menu
@@ -916,7 +1042,40 @@ impl App {
                             return self.handle_editor_click(row, col, editor_rect);
                         }
                     }
+                    "output" => {
+                        if let Some(out_rect) = layout.get("output") {
+                            let out_row = out_rect.y + 1;
+                            let out_col = out_rect.x + 1;
+                            let out_width = out_rect.width;
+
+                            // Check if click is on close button [X]
+                            let close_x = out_col + out_width - 4;
+                            if row == out_row && col >= close_x && col < close_x + 3 {
+                                self.state.show_output = false;
+                                return true;
+                            }
+                        }
+                        return true;
+                    }
                     "immediate" => {
+                        if let Some(imm_rect) = layout.get("immediate") {
+                            let imm_row = imm_rect.y + 1;
+                            let imm_col = imm_rect.x + 1;
+                            let imm_width = imm_rect.width;
+
+                            // Check if click is on maximize/minimize button [↑] or [↓]
+                            let button_x = imm_col + imm_width - 4;
+                            if row == imm_row && col >= button_x && col < button_x + 3 {
+                                self.state.immediate_maximized = !self.state.immediate_maximized;
+                                return true;
+                            }
+
+                            // Check if click is on top border (for resize dragging)
+                            if row == imm_row && !self.state.immediate_maximized {
+                                self.state.immediate_resize_dragging = true;
+                                return true;
+                            }
+                        }
                         self.state.focus = Focus::Immediate;
                         return true;
                     }
@@ -1162,8 +1321,52 @@ impl App {
                 self.editor.cursor_col = target_col.min(line_len);
             }
 
-            // Start selection on click (will be extended on drag)
-            self.editor.start_selection();
+            // Multi-click detection
+            let now = std::time::Instant::now();
+            let elapsed = now.duration_since(self.state.last_click_time);
+            let same_pos = self.state.last_click_pos == (row, col);
+            let is_quick_click = elapsed.as_millis() < 400;
+
+            if same_pos && is_quick_click {
+                // Increment click count (max 4)
+                self.state.click_count = (self.state.click_count + 1).min(4);
+            } else {
+                // Reset to single click
+                self.state.click_count = 1;
+            }
+
+            self.state.last_click_time = now;
+            self.state.last_click_pos = (row, col);
+
+            // Handle based on click count
+            match self.state.click_count {
+                2 => {
+                    // Double-click: select word
+                    self.editor.select_word();
+                    self.editor.is_selecting = true;
+                    // Store anchor for drag extension
+                    self.state.selection_anchor = self.editor.get_selection_bounds();
+                }
+                3 => {
+                    // Triple-click: select line
+                    self.editor.select_line();
+                    self.editor.is_selecting = true;
+                    // Store anchor for drag extension
+                    self.state.selection_anchor = self.editor.get_selection_bounds();
+                }
+                4 => {
+                    // Quadruple-click: select paragraph
+                    self.editor.select_paragraph();
+                    self.editor.is_selecting = true;
+                    // Store anchor for drag extension
+                    self.state.selection_anchor = self.editor.get_selection_bounds();
+                }
+                _ => {
+                    // Single click: start selection
+                    self.editor.start_selection();
+                    self.state.selection_anchor = None;
+                }
+            }
             return true;
         }
 
@@ -1174,6 +1377,10 @@ impl App {
     fn run_program(&mut self) {
         self.state.run_state = RunState::Running;
         self.state.set_status("Running...");
+
+        // Clear output window and show it
+        self.output.clear();
+        self.state.show_output = true;
 
         // Parse and execute
         let source = self.editor.content();
@@ -1197,21 +1404,22 @@ impl App {
                 use crate::basic::interpreter::ExecutionResult;
                 match self.interpreter.execute_with_debug(&program) {
                     Ok(ExecutionResult::Completed) => {
-                        // Show output in immediate window
+                        // Show output in output window (black bg, white text)
                         for line in self.interpreter.take_output() {
-                            self.immediate.add_output(&line);
+                            self.output.add_output(&line);
                         }
                         self.state.set_status("Program completed");
                         self.state.current_line = None;
-                        self.state.run_state = RunState::Editing;
+                        self.state.run_state = RunState::Finished;
                     }
                     Ok(ExecutionResult::Breakpoint(line)) => {
                         // Show output so far
                         for output_line in self.interpreter.take_output() {
-                            self.immediate.add_output(&output_line);
+                            self.output.add_output(&output_line);
                         }
                         self.state.current_line = Some(line);
                         self.state.run_state = RunState::Paused;
+                        self.state.show_output = false; // Return to editor for breakpoint
                         self.state.set_status(format!("Breakpoint hit at line {}", line + 1));
                         self.editor.go_to_line(line + 1);
                     }
@@ -1220,17 +1428,17 @@ impl App {
                         self.state.run_state = RunState::Stepping;
                     }
                     Err(e) => {
-                        self.immediate.add_output(&format!("Runtime error: {}", e));
+                        self.output.add_output(&format!("Runtime error: {}", e));
                         self.state.set_status(format!("Error: {}", e));
                         self.state.current_line = None;
-                        self.state.run_state = RunState::Editing;
+                        self.state.run_state = RunState::Finished;
                     }
                 }
             }
             Err(e) => {
-                self.immediate.add_output(&format!("Syntax error: {}", e));
+                self.output.add_output(&format!("Syntax error: {}", e));
                 self.state.set_status(format!("Syntax error: {}", e));
-                self.state.run_state = RunState::Editing;
+                self.state.run_state = RunState::Finished;
             }
         }
     }
@@ -1351,6 +1559,8 @@ impl App {
             if let Some(ref mut clipboard) = self.clipboard {
                 let _ = clipboard.set_text(&text);
                 self.state.set_status("Copied to clipboard");
+                // Exit keyboard select mode after copy
+                self.editor.keyboard_select_mode = false;
             }
         }
     }
@@ -1411,6 +1621,26 @@ impl App {
                         // One input, Tab moves to buttons
                         self.state.dialog_button = (self.state.dialog_button + 1) % self.state.dialog_button_count;
                     }
+                    DialogType::DisplayOptions => {
+                        // Cycle through: tab stops (0), scrollbars (1), color scheme (2-4), buttons
+                        self.state.dialog_input_field = (self.state.dialog_input_field + 1) % 5;
+                        if self.state.dialog_input_field == 0 {
+                            self.state.dialog_input_cursor = self.state.tab_stops.to_string().len();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            InputEvent::Char(' ') if matches!(self.state.dialog, DialogType::DisplayOptions) => {
+                // Space toggles checkbox/radio in DisplayOptions
+                match self.state.dialog_input_field {
+                    1 => {
+                        // Toggle scrollbars
+                        self.state.show_scrollbars = !self.state.show_scrollbars;
+                    }
+                    2 => self.state.color_scheme = 0, // Classic Blue
+                    3 => self.state.color_scheme = 1, // Dark
+                    4 => self.state.color_scheme = 2, // Light
                     _ => {}
                 }
             }
@@ -1482,6 +1712,13 @@ impl App {
                 }
             }
             DialogType::GoToLine => &self.state.dialog_goto_line,
+            DialogType::NewSub | DialogType::NewFunction | DialogType::FindLabel => &self.state.dialog_find_text,
+            DialogType::CommandArgs => &self.state.command_args,
+            DialogType::HelpPath => &self.state.help_path,
+            DialogType::DisplayOptions => {
+                // Tab stops field
+                "" // Will need to handle specially
+            }
             _ => "",
         }
     }
@@ -1507,6 +1744,33 @@ impl App {
                 if c.is_ascii_digit() {
                     self.state.dialog_goto_line.insert(cursor, c);
                     self.state.dialog_input_cursor += 1;
+                }
+            }
+            DialogType::NewSub | DialogType::NewFunction | DialogType::FindLabel => {
+                self.state.dialog_find_text.insert(cursor, c);
+                self.state.dialog_input_cursor += 1;
+            }
+            DialogType::CommandArgs => {
+                self.state.command_args.insert(cursor, c);
+                self.state.dialog_input_cursor += 1;
+            }
+            DialogType::HelpPath => {
+                self.state.help_path.insert(cursor, c);
+                self.state.dialog_input_cursor += 1;
+            }
+            DialogType::DisplayOptions => {
+                // Only allow digits in tab stops field
+                if self.state.dialog_input_field == 0 && c.is_ascii_digit() {
+                    let mut tab_str = self.state.tab_stops.to_string();
+                    if cursor <= tab_str.len() {
+                        tab_str.insert(cursor, c);
+                        if let Ok(n) = tab_str.parse::<usize>() {
+                            if n > 0 && n <= 16 {
+                                self.state.tab_stops = n;
+                                self.state.dialog_input_cursor += 1;
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
@@ -1536,6 +1800,32 @@ impl App {
                 self.state.dialog_goto_line.remove(cursor);
                 self.state.dialog_input_cursor = cursor;
             }
+            DialogType::NewSub | DialogType::NewFunction | DialogType::FindLabel => {
+                self.state.dialog_find_text.remove(cursor);
+                self.state.dialog_input_cursor = cursor;
+            }
+            DialogType::CommandArgs => {
+                self.state.command_args.remove(cursor);
+                self.state.dialog_input_cursor = cursor;
+            }
+            DialogType::HelpPath => {
+                self.state.help_path.remove(cursor);
+                self.state.dialog_input_cursor = cursor;
+            }
+            DialogType::DisplayOptions => {
+                if self.state.dialog_input_field == 0 {
+                    let mut tab_str = self.state.tab_stops.to_string();
+                    if cursor < tab_str.len() {
+                        tab_str.remove(cursor);
+                        if let Ok(n) = tab_str.parse::<usize>() {
+                            if n > 0 {
+                                self.state.tab_stops = n;
+                                self.state.dialog_input_cursor = cursor;
+                            }
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1561,6 +1851,34 @@ impl App {
             DialogType::GoToLine => {
                 if cursor < self.state.dialog_goto_line.len() {
                     self.state.dialog_goto_line.remove(cursor);
+                }
+            }
+            DialogType::NewSub | DialogType::NewFunction | DialogType::FindLabel => {
+                if cursor < self.state.dialog_find_text.len() {
+                    self.state.dialog_find_text.remove(cursor);
+                }
+            }
+            DialogType::CommandArgs => {
+                if cursor < self.state.command_args.len() {
+                    self.state.command_args.remove(cursor);
+                }
+            }
+            DialogType::HelpPath => {
+                if cursor < self.state.help_path.len() {
+                    self.state.help_path.remove(cursor);
+                }
+            }
+            DialogType::DisplayOptions => {
+                if self.state.dialog_input_field == 0 {
+                    let mut tab_str = self.state.tab_stops.to_string();
+                    if cursor < tab_str.len() {
+                        tab_str.remove(cursor);
+                        if let Ok(n) = tab_str.parse::<usize>() {
+                            if n > 0 {
+                                self.state.tab_stops = n;
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
@@ -1589,6 +1907,60 @@ impl App {
             DialogType::GoToLine => {
                 match self.state.dialog_button {
                     0 => self.go_to_line(), // OK
+                    1 => self.state.close_dialog(), // Cancel
+                    _ => {}
+                }
+            }
+            DialogType::NewSub => {
+                match self.state.dialog_button {
+                    0 => self.insert_new_sub(), // OK
+                    1 => self.state.close_dialog(), // Cancel
+                    _ => {}
+                }
+            }
+            DialogType::NewFunction => {
+                match self.state.dialog_button {
+                    0 => self.insert_new_function(), // OK
+                    1 => self.state.close_dialog(), // Cancel
+                    _ => {}
+                }
+            }
+            DialogType::FindLabel => {
+                match self.state.dialog_button {
+                    0 => self.find_label(), // OK
+                    1 => self.state.close_dialog(), // Cancel
+                    _ => {}
+                }
+            }
+            DialogType::CommandArgs => {
+                match self.state.dialog_button {
+                    0 => {
+                        // OK - save the command args (already in state)
+                        self.state.set_status(format!("COMMAND$ set to: {}", self.state.command_args));
+                        self.state.close_dialog();
+                    }
+                    1 => self.state.close_dialog(), // Cancel
+                    _ => {}
+                }
+            }
+            DialogType::HelpPath => {
+                match self.state.dialog_button {
+                    0 => {
+                        // OK - save the help path (already in state)
+                        self.state.set_status(format!("Help path set to: {}", self.state.help_path));
+                        self.state.close_dialog();
+                    }
+                    1 => self.state.close_dialog(), // Cancel
+                    _ => {}
+                }
+            }
+            DialogType::DisplayOptions => {
+                match self.state.dialog_button {
+                    0 => {
+                        // OK - settings are already modified in place
+                        self.state.set_status("Display options saved");
+                        self.state.close_dialog();
+                    }
                     1 => self.state.close_dialog(), // Cancel
                     _ => {}
                 }
@@ -1666,6 +2038,180 @@ impl App {
             self.state.set_status("Invalid line number");
         }
         self.state.close_dialog();
+    }
+
+    /// Insert a new SUB at end of file
+    fn insert_new_sub(&mut self) {
+        let name = self.state.dialog_find_text.trim().to_string();
+        if name.is_empty() {
+            self.state.set_status("SUB name cannot be empty");
+            return;
+        }
+
+        // Insert SUB block at end of file
+        let sub_block = format!("\n\nSUB {}\n    \nEND SUB", name);
+        let line_count = self.editor.buffer.line_count();
+
+        // Go to end of file and insert the SUB block
+        self.editor.go_to_line(line_count);
+        if let Some(line) = self.editor.buffer.line(self.editor.cursor_line) {
+            self.editor.cursor_col = line.len();
+        }
+        self.editor.insert_text(&sub_block);
+
+        // Move cursor to inside the SUB (the blank line)
+        self.editor.go_to_line(line_count + 2);
+        self.editor.cursor_col = 4;
+
+        self.state.set_modified(true);
+        self.state.set_status(format!("Created SUB {}", name));
+        self.state.close_dialog();
+    }
+
+    /// Insert a new FUNCTION at end of file
+    fn insert_new_function(&mut self) {
+        let name = self.state.dialog_find_text.trim().to_string();
+        if name.is_empty() {
+            self.state.set_status("FUNCTION name cannot be empty");
+            return;
+        }
+
+        // Insert FUNCTION block at end of file
+        let func_block = format!("\n\nFUNCTION {}\n    {} = 0\nEND FUNCTION", name, name);
+        let line_count = self.editor.buffer.line_count();
+
+        // Go to end of file and insert the FUNCTION block
+        self.editor.go_to_line(line_count);
+        if let Some(line) = self.editor.buffer.line(self.editor.cursor_line) {
+            self.editor.cursor_col = line.len();
+        }
+        self.editor.insert_text(&func_block);
+
+        // Move cursor to inside the FUNCTION
+        self.editor.go_to_line(line_count + 2);
+        self.editor.cursor_col = 4;
+
+        self.state.set_modified(true);
+        self.state.set_status(format!("Created FUNCTION {}", name));
+        self.state.close_dialog();
+    }
+
+    /// Find a label in the source
+    fn find_label(&mut self) {
+        let label = self.state.dialog_find_text.trim();
+        if label.is_empty() {
+            self.state.set_status("Label name cannot be empty");
+            return;
+        }
+
+        // Search for label: (like "10:" or "MyLabel:")
+        let label_pattern = format!("{}:", label);
+
+        for (line_idx, line) in self.editor.buffer.lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with(&label_pattern) || trimmed == label_pattern.trim_end_matches(':') {
+                self.editor.go_to_line(line_idx + 1);
+                self.state.set_status(format!("Found label at line {}", line_idx + 1));
+                self.state.close_dialog();
+                return;
+            }
+        }
+
+        self.state.set_status(format!("Label '{}' not found", label));
+    }
+
+    /// Check syntax of current buffer
+    fn check_syntax(&mut self) {
+        self.state.syntax_errors.clear();
+
+        // Simple syntax checking - check for unclosed blocks
+        let mut open_fors = 0;
+        let mut open_ifs = 0;
+        let mut open_whiles = 0;
+        let mut open_subs = 0;
+        let mut open_functions = 0;
+
+        for (line_idx, line) in self.editor.buffer.lines.iter().enumerate() {
+            let upper = line.to_uppercase();
+            let trimmed = upper.trim();
+
+            // Track block starts
+            if trimmed.starts_with("FOR ") && !trimmed.contains(" NEXT") {
+                open_fors += 1;
+            }
+            if (trimmed.starts_with("IF ") || trimmed == "IF") && !trimmed.contains(" THEN ") && !trimmed.ends_with(" THEN") {
+                // Multi-line IF
+            } else if (trimmed.starts_with("IF ") && (trimmed.contains(" THEN") && !trimmed.chars().filter(|&c| c != ' ').skip_while(|&c| c != 'N').take(4).collect::<String>().contains("THEN"))) {
+                // This is getting complex - simplified version
+            }
+            if trimmed == "IF" || (trimmed.starts_with("IF ") && trimmed.ends_with("THEN")) {
+                open_ifs += 1;
+            }
+            if trimmed.starts_with("WHILE ") || trimmed == "WHILE" {
+                open_whiles += 1;
+            }
+            if trimmed.starts_with("SUB ") {
+                open_subs += 1;
+            }
+            if trimmed.starts_with("FUNCTION ") {
+                open_functions += 1;
+            }
+
+            // Track block ends
+            if trimmed == "NEXT" || trimmed.starts_with("NEXT ") {
+                if open_fors > 0 {
+                    open_fors -= 1;
+                } else {
+                    self.state.syntax_errors.push((line_idx, "NEXT without FOR".to_string()));
+                }
+            }
+            if trimmed == "END IF" || trimmed == "ENDIF" {
+                if open_ifs > 0 {
+                    open_ifs -= 1;
+                } else {
+                    self.state.syntax_errors.push((line_idx, "END IF without IF".to_string()));
+                }
+            }
+            if trimmed == "WEND" {
+                if open_whiles > 0 {
+                    open_whiles -= 1;
+                } else {
+                    self.state.syntax_errors.push((line_idx, "WEND without WHILE".to_string()));
+                }
+            }
+            if trimmed == "END SUB" {
+                if open_subs > 0 {
+                    open_subs -= 1;
+                } else {
+                    self.state.syntax_errors.push((line_idx, "END SUB without SUB".to_string()));
+                }
+            }
+            if trimmed == "END FUNCTION" {
+                if open_functions > 0 {
+                    open_functions -= 1;
+                } else {
+                    self.state.syntax_errors.push((line_idx, "END FUNCTION without FUNCTION".to_string()));
+                }
+            }
+        }
+
+        // Check for unclosed blocks at end
+        let last_line = self.editor.buffer.line_count().saturating_sub(1);
+        if open_fors > 0 {
+            self.state.syntax_errors.push((last_line, format!("{} unclosed FOR loop(s)", open_fors)));
+        }
+        if open_ifs > 0 {
+            self.state.syntax_errors.push((last_line, format!("{} unclosed IF statement(s)", open_ifs)));
+        }
+        if open_whiles > 0 {
+            self.state.syntax_errors.push((last_line, format!("{} unclosed WHILE loop(s)", open_whiles)));
+        }
+        if open_subs > 0 {
+            self.state.syntax_errors.push((last_line, format!("{} unclosed SUB(s)", open_subs)));
+        }
+        if open_functions > 0 {
+            self.state.syntax_errors.push((last_line, format!("{} unclosed FUNCTION(s)", open_functions)));
+        }
     }
 
     /// Repeat last search (F3)
