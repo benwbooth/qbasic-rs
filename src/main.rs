@@ -31,6 +31,8 @@ struct App {
     output: OutputWindow,
     interpreter: Interpreter,
     clipboard: Option<arboard::Clipboard>,
+    /// Parsed program stored for resuming execution after NeedsInput
+    current_program: Option<Vec<basic::parser::Stmt>>,
 }
 
 impl App {
@@ -49,6 +51,7 @@ impl App {
             output: OutputWindow::new(),
             interpreter: Interpreter::new(),
             clipboard: arboard::Clipboard::new().ok(),
+            current_program: None,
         })
     }
 
@@ -67,16 +70,59 @@ impl App {
             if (width, height) != self.screen.size() {
                 self.screen.resize(width, height);
                 self.screen.invalidate();
+                // Also resize graphics buffer if program is running
+                if matches!(self.state.run_state, RunState::Running | RunState::WaitingForInput) {
+                    self.interpreter.graphics.resize(width, height);
+                }
             }
 
             // Draw
             self.draw();
 
+            // Apply mouse cursor effect (orange box with inverted foreground)
+            self.screen.apply_mouse_cursor(self.state.mouse_row, self.state.mouse_col);
+
             // Flush to terminal
             self.screen.flush(&mut self.terminal)?;
 
             // Handle input
-            if let (Some(key), raw_bytes) = self.terminal.read_key_raw()? {
+            let (maybe_key, raw_bytes) = self.terminal.read_key_raw()?;
+
+            // If waiting for INKEY$ input, process key (or lack thereof) and continue execution
+            if self.state.run_state == RunState::WaitingForInput {
+                if let Some(ref key) = maybe_key {
+                    // Check for Ctrl+C or Ctrl+Break to stop program
+                    if matches!(key, terminal::Key::Ctrl('c')) {
+                        self.state.run_state = RunState::Finished;
+                        self.state.set_status("Program stopped");
+                        self.current_program = None;
+                    } else {
+                        // Convert key to string for INKEY$
+                        let key_str = if !raw_bytes.is_empty() {
+                            // Use raw bytes for escape sequences (arrow keys, etc.)
+                            String::from_utf8_lossy(&raw_bytes).to_string()
+                        } else {
+                            match key {
+                                terminal::Key::Char(c) => c.to_string(),
+                                terminal::Key::Enter => "\r".to_string(),
+                                terminal::Key::Escape => "\x1b".to_string(),
+                                terminal::Key::Tab => "\t".to_string(),
+                                _ => String::new(),
+                            }
+                        };
+
+                        if !key_str.is_empty() {
+                            self.interpreter.pending_key = Some(key_str);
+                        }
+                        // Continue execution (INKEY$ should return empty string if no key available)
+                        self.continue_after_input();
+                    }
+                } else {
+                    // No key pressed - continue execution with empty INKEY$
+                    self.continue_after_input();
+                }
+            } else if let Some(key) = maybe_key {
+                // Normal input handling when not waiting for INKEY$
                 // Debug: show raw bytes in status bar
                 if !raw_bytes.is_empty() && raw_bytes[0] == 0x1b {
                     let hex: Vec<String> = raw_bytes.iter().map(|b| format!("{:02x}", b)).collect();
@@ -86,6 +132,9 @@ impl App {
                 if !self.handle_input(event) {
                     break;
                 }
+            } else {
+                // No key pressed - sleep briefly to avoid 100% CPU
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
 
             if self.state.should_quit {
@@ -101,7 +150,12 @@ impl App {
 
         // If output window is visible, draw it fullscreen
         if self.state.show_output {
-            self.output.draw_fullscreen(&mut self.screen, &self.state);
+            // Use graphics screen for running programs (uses LOCATE, COLOR, etc.)
+            if matches!(self.state.run_state, RunState::Running | RunState::WaitingForInput | RunState::Finished) {
+                self.output.draw_graphics_screen(&mut self.screen, &self.interpreter.graphics, &self.state);
+            } else {
+                self.output.draw_fullscreen(&mut self.screen, &self.state);
+            }
             return;
         }
 
@@ -198,6 +252,20 @@ impl App {
                 }
                 return true;
             }
+        }
+
+        // Track mouse position for cursor rendering
+        match &event {
+            InputEvent::MouseClick { row, col } |
+            InputEvent::MouseDrag { row, col } |
+            InputEvent::MouseMove { row, col } |
+            InputEvent::MouseRelease { row, col } |
+            InputEvent::ScrollUp { row, col } |
+            InputEvent::ScrollDown { row, col } => {
+                self.state.mouse_row = *row;
+                self.state.mouse_col = *col;
+            }
+            _ => {}
         }
 
         // Handle mouse events
@@ -384,12 +452,14 @@ impl App {
 
         // If dialog is open, route input directly to dialog handler
         if self.state.focus == Focus::Dialog {
-            // Check if this is an input dialog
+            // Check if this is a dialog that accepts input (text fields, lists, checkboxes)
             let is_input_dialog = matches!(
                 self.state.dialog,
                 DialogType::Find | DialogType::Replace | DialogType::GoToLine |
                 DialogType::NewSub | DialogType::NewFunction | DialogType::FindLabel |
-                DialogType::CommandArgs | DialogType::HelpPath | DialogType::DisplayOptions
+                DialogType::CommandArgs | DialogType::HelpPath | DialogType::DisplayOptions |
+                DialogType::FileOpen | DialogType::FileSave | DialogType::FileSaveAs |
+                DialogType::Print
             );
 
             if is_input_dialog {
@@ -789,7 +859,7 @@ impl App {
     }
 
     fn handle_mouse_click(&mut self, row: u16, col: u16) -> bool {
-        let (width, height) = self.screen.size();
+        let (_width, _height) = self.screen.size();
 
         // If a dialog is open, handle dialog clicks
         if !matches!(self.state.dialog, DialogType::None) {
@@ -1226,7 +1296,7 @@ impl App {
             // Click on track (between arrows) - page up/down or drag thumb
             let track_height = vscroll_end.saturating_sub(vscroll_start).saturating_sub(1) as usize;
             if track_height > 1 {
-                let visible_lines = editor_height.saturating_sub(3) as usize;
+                let page_size = self.editor.visible_lines.max(1);
                 let line_count = self.editor.buffer.line_count().max(1);
                 let max_scroll = line_count.saturating_sub(1);
 
@@ -1243,10 +1313,14 @@ impl App {
                     self.state.vscroll_dragging = true;
                 } else if row < thumb_row {
                     // Click above thumb - page up
-                    self.editor.scroll_row = self.editor.scroll_row.saturating_sub(visible_lines);
+                    self.editor.scroll_row = self.editor.scroll_row.saturating_sub(page_size);
+                    self.editor.cursor_line = self.editor.cursor_line.saturating_sub(page_size);
+                    self.editor.clamp_cursor();
                 } else {
                     // Click below thumb - page down
-                    self.editor.scroll_row = (self.editor.scroll_row + visible_lines).min(max_scroll);
+                    self.editor.scroll_row = (self.editor.scroll_row + page_size).min(max_scroll);
+                    self.editor.cursor_line = (self.editor.cursor_line + page_size).min(max_scroll);
+                    self.editor.clamp_cursor();
                 }
                 self.state.set_status(format!("VSCROLL: now at {}", self.editor.scroll_row));
             }
@@ -1273,7 +1347,7 @@ impl App {
             // Click on track (between arrows) - page left/right or drag thumb
             let track_width = hscroll_end.saturating_sub(hscroll_start).saturating_sub(1) as usize;
             if track_width > 1 {
-                let visible_cols = editor_width.saturating_sub(3) as usize;
+                let page_size = self.editor.visible_cols.max(1);
                 let max_line_len = self.editor.buffer.max_line_length().max(1);
                 let max_scroll = max_line_len.saturating_sub(1);
 
@@ -1290,10 +1364,10 @@ impl App {
                     self.state.hscroll_dragging = true;
                 } else if col < thumb_col {
                     // Click left of thumb - page left
-                    self.editor.scroll_col = self.editor.scroll_col.saturating_sub(visible_cols);
+                    self.editor.scroll_col = self.editor.scroll_col.saturating_sub(page_size);
                 } else {
                     // Click right of thumb - page right
-                    self.editor.scroll_col = (self.editor.scroll_col + visible_cols).min(max_scroll);
+                    self.editor.scroll_col = (self.editor.scroll_col + page_size).min(max_scroll);
                 }
                 self.state.set_status(format!("HSCROLL: now at {}", self.editor.scroll_col));
             }
@@ -1392,6 +1466,11 @@ impl App {
             Ok(program) => {
                 self.interpreter.reset();
 
+                // Size graphics buffer to terminal size
+                let (width, height) = self.terminal.size();
+                self.interpreter.graphics.resize(width, height);
+                self.interpreter.graphics.cls();
+
                 // Pass breakpoints to interpreter
                 let bp_lines: Vec<usize> = self.state.breakpoints
                     .iter()
@@ -1400,6 +1479,9 @@ impl App {
                     .collect();
                 self.interpreter.set_breakpoints(&bp_lines);
                 self.interpreter.set_step_mode(false);
+
+                // Store program for potential resume after NeedsInput
+                self.current_program = Some(program.clone());
 
                 use crate::basic::interpreter::ExecutionResult;
                 match self.interpreter.execute_with_debug(&program) {
@@ -1411,6 +1493,7 @@ impl App {
                         self.state.set_status("Program completed");
                         self.state.current_line = None;
                         self.state.run_state = RunState::Finished;
+                        self.current_program = None;
                     }
                     Ok(ExecutionResult::Breakpoint(line)) => {
                         // Show output so far
@@ -1427,11 +1510,20 @@ impl App {
                         self.state.current_line = Some(line);
                         self.state.run_state = RunState::Stepping;
                     }
+                    Ok(ExecutionResult::NeedsInput) => {
+                        // Show output so far
+                        for output_line in self.interpreter.take_output() {
+                            self.output.add_output(&output_line);
+                        }
+                        // Yield to allow UI update and keyboard input
+                        self.state.run_state = RunState::WaitingForInput;
+                    }
                     Err(e) => {
                         self.output.add_output(&format!("Runtime error: {}", e));
                         self.state.set_status(format!("Error: {}", e));
                         self.state.current_line = None;
                         self.state.run_state = RunState::Finished;
+                        self.current_program = None;
                     }
                 }
             }
@@ -1471,6 +1563,9 @@ impl App {
                 self.interpreter.set_breakpoints(&bp_lines);
                 self.interpreter.set_step_mode(true);
 
+                // Store program for potential resume
+                self.current_program = Some(program.clone());
+
                 use crate::basic::interpreter::ExecutionResult;
                 let result = if self.state.run_state == RunState::Stepping || self.state.run_state == RunState::Paused {
                     self.interpreter.continue_execution(&program)
@@ -1486,6 +1581,7 @@ impl App {
                         self.state.set_status("Program completed");
                         self.state.current_line = None;
                         self.state.run_state = RunState::Editing;
+                        self.current_program = None;
                     }
                     Ok(ExecutionResult::Breakpoint(line)) | Ok(ExecutionResult::Stepped(line)) => {
                         for output_line in self.interpreter.take_output() {
@@ -1496,17 +1592,72 @@ impl App {
                         self.state.set_status(format!("Step: line {} - F8 to continue", line + 1));
                         self.editor.go_to_line(line + 1);
                     }
+                    Ok(ExecutionResult::NeedsInput) => {
+                        for output_line in self.interpreter.take_output() {
+                            self.immediate.add_output(&output_line);
+                        }
+                        self.state.run_state = RunState::WaitingForInput;
+                    }
                     Err(e) => {
                         self.immediate.add_output(&format!("Runtime error: {}", e));
                         self.state.set_status(format!("Error: {}", e));
                         self.state.current_line = None;
                         self.state.run_state = RunState::Editing;
+                        self.current_program = None;
                     }
                 }
             }
             Err(e) => {
                 self.immediate.add_output(&format!("Syntax error: {}", e));
                 self.state.set_status(format!("Syntax error: {}", e));
+            }
+        }
+    }
+
+    /// Continue execution after receiving keyboard input for INKEY$
+    fn continue_after_input(&mut self) {
+        let program = match &self.current_program {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        use crate::basic::interpreter::ExecutionResult;
+        match self.interpreter.continue_execution(&program) {
+            Ok(ExecutionResult::Completed) => {
+                for line in self.interpreter.take_output() {
+                    self.output.add_output(&line);
+                }
+                self.state.set_status("Program completed");
+                self.state.current_line = None;
+                self.state.run_state = RunState::Finished;
+                self.current_program = None;
+            }
+            Ok(ExecutionResult::Breakpoint(line)) => {
+                for output_line in self.interpreter.take_output() {
+                    self.output.add_output(&output_line);
+                }
+                self.state.current_line = Some(line);
+                self.state.run_state = RunState::Paused;
+                self.state.show_output = false;
+                self.state.set_status(format!("Breakpoint hit at line {}", line + 1));
+                self.editor.go_to_line(line + 1);
+            }
+            Ok(ExecutionResult::Stepped(line)) => {
+                self.state.current_line = Some(line);
+                self.state.run_state = RunState::Stepping;
+            }
+            Ok(ExecutionResult::NeedsInput) => {
+                for output_line in self.interpreter.take_output() {
+                    self.output.add_output(&output_line);
+                }
+                self.state.run_state = RunState::WaitingForInput;
+            }
+            Err(e) => {
+                self.output.add_output(&format!("Runtime error: {}", e));
+                self.state.set_status(format!("Error: {}", e));
+                self.state.current_line = None;
+                self.state.run_state = RunState::Finished;
+                self.current_program = None;
             }
         }
     }
@@ -1591,7 +1742,7 @@ impl App {
         }
     }
 
-    /// Handle input for dialogs that accept text input (Find, Replace, GoToLine)
+    /// Handle input for dialogs that accept text input, checkboxes, or list navigation
     fn handle_input_dialog(&mut self, event: &InputEvent) -> bool {
         match event {
             InputEvent::Escape => {
@@ -1601,47 +1752,16 @@ impl App {
                 self.execute_dialog_action();
             }
             InputEvent::Tab => {
-                // Move to next field or button
-                match self.state.dialog {
-                    DialogType::Find => {
-                        // Only one input field, Tab moves to buttons
-                        self.state.dialog_button = (self.state.dialog_button + 1) % self.state.dialog_button_count;
-                    }
-                    DialogType::Replace => {
-                        // Two input fields
-                        if self.state.dialog_input_field == 0 {
-                            self.state.dialog_input_field = 1;
-                            self.state.dialog_input_cursor = self.state.dialog_replace_text.len();
-                        } else {
-                            self.state.dialog_input_field = 0;
-                            self.state.dialog_input_cursor = self.state.dialog_find_text.len();
-                        }
-                    }
-                    DialogType::GoToLine => {
-                        // One input, Tab moves to buttons
-                        self.state.dialog_button = (self.state.dialog_button + 1) % self.state.dialog_button_count;
-                    }
-                    DialogType::DisplayOptions => {
-                        // Cycle through: tab stops (0), scrollbars (1), color scheme (2-4), buttons
-                        self.state.dialog_input_field = (self.state.dialog_input_field + 1) % 5;
-                        if self.state.dialog_input_field == 0 {
-                            self.state.dialog_input_cursor = self.state.tab_stops.to_string().len();
-                        }
-                    }
-                    _ => {}
-                }
+                self.dialog_next_field();
             }
-            InputEvent::Char(' ') if matches!(self.state.dialog, DialogType::DisplayOptions) => {
-                // Space toggles checkbox/radio in DisplayOptions
-                match self.state.dialog_input_field {
-                    1 => {
-                        // Toggle scrollbars
-                        self.state.show_scrollbars = !self.state.show_scrollbars;
-                    }
-                    2 => self.state.color_scheme = 0, // Classic Blue
-                    3 => self.state.color_scheme = 1, // Dark
-                    4 => self.state.color_scheme = 2, // Light
-                    _ => {}
+            InputEvent::ShiftTab => {
+                self.dialog_prev_field();
+            }
+            InputEvent::Char(' ') => {
+                // Space toggles checkboxes/radios or inserts space in text fields
+                if !self.dialog_toggle_checkbox() {
+                    // Not on a checkbox/radio, treat as text input
+                    self.dialog_insert_char(' ');
                 }
             }
             InputEvent::Char(c) => {
@@ -1654,61 +1774,319 @@ impl App {
                 self.dialog_delete();
             }
             InputEvent::CursorLeft => {
-                if self.state.dialog_input_cursor > 0 {
-                    self.state.dialog_input_cursor -= 1;
+                // In text field: move cursor left
+                // In list: do nothing (or could scroll)
+                if self.is_current_field_text() {
+                    if self.state.dialog_input_cursor > 0 {
+                        self.state.dialog_input_cursor -= 1;
+                    }
                 }
             }
             InputEvent::CursorRight => {
-                let max_len = self.get_current_dialog_text().len();
-                if self.state.dialog_input_cursor < max_len {
-                    self.state.dialog_input_cursor += 1;
+                // In text field: move cursor right
+                if self.is_current_field_text() {
+                    let max_len = self.get_current_dialog_text().len();
+                    if self.state.dialog_input_cursor < max_len {
+                        self.state.dialog_input_cursor += 1;
+                    }
                 }
             }
             InputEvent::Home => {
-                self.state.dialog_input_cursor = 0;
+                if self.is_current_field_text() {
+                    self.state.dialog_input_cursor = 0;
+                }
             }
             InputEvent::End => {
-                self.state.dialog_input_cursor = self.get_current_dialog_text().len();
-            }
-            InputEvent::CursorUp | InputEvent::CursorDown => {
-                // Toggle between buttons or fields
-                match self.state.dialog {
-                    DialogType::Replace => {
-                        // Move between find and replace fields
-                        if self.state.dialog_input_field == 0 {
-                            self.state.dialog_input_field = 1;
-                            self.state.dialog_input_cursor = self.state.dialog_replace_text.len().min(self.state.dialog_input_cursor);
-                        } else {
-                            self.state.dialog_input_field = 0;
-                            self.state.dialog_input_cursor = self.state.dialog_find_text.len().min(self.state.dialog_input_cursor);
-                        }
-                    }
-                    _ => {
-                        // Move between buttons
-                        if self.state.dialog_button_count > 0 {
-                            if matches!(event, InputEvent::CursorDown) {
-                                self.state.dialog_button = (self.state.dialog_button + 1) % self.state.dialog_button_count;
-                            } else {
-                                self.state.dialog_button = (self.state.dialog_button + self.state.dialog_button_count - 1) % self.state.dialog_button_count;
-                            }
-                        }
-                    }
+                if self.is_current_field_text() {
+                    self.state.dialog_input_cursor = self.get_current_dialog_text().len();
                 }
+            }
+            InputEvent::CursorUp => {
+                self.dialog_cursor_up();
+            }
+            InputEvent::CursorDown => {
+                self.dialog_cursor_down();
             }
             _ => {}
         }
         true
     }
 
+    /// Move to next field in dialog (Tab)
+    fn dialog_next_field(&mut self) {
+        let field_count = self.state.dialog_field_count;
+        if field_count > 0 {
+            self.state.dialog_input_field = (self.state.dialog_input_field + 1) % field_count;
+            self.sync_dialog_button_from_field();
+            self.position_cursor_for_field();
+        }
+    }
+
+    /// Move to previous field in dialog (Shift+Tab)
+    fn dialog_prev_field(&mut self) {
+        let field_count = self.state.dialog_field_count;
+        if field_count > 0 {
+            self.state.dialog_input_field = (self.state.dialog_input_field + field_count - 1) % field_count;
+            self.sync_dialog_button_from_field();
+            self.position_cursor_for_field();
+        }
+    }
+
+    /// Sync dialog_button from dialog_input_field for button fields
+    fn sync_dialog_button_from_field(&mut self) {
+        match &self.state.dialog {
+            // FileOpen: filename(0), directory(1), files(2), dirs(3), OK(4), Cancel(5), Help(6)
+            DialogType::FileOpen | DialogType::FileSave | DialogType::FileSaveAs => {
+                self.state.dialog_button = match self.state.dialog_input_field {
+                    4 => 0, // OK
+                    5 => 1, // Cancel
+                    6 => 2, // Help
+                    _ => self.state.dialog_button,
+                };
+            }
+            // Find: search(0), case(1), word(2), Find(3), Cancel(4), Help(5)
+            DialogType::Find => {
+                self.state.dialog_button = match self.state.dialog_input_field {
+                    3 => 0, // Find
+                    4 => 1, // Cancel
+                    5 => 2, // Help
+                    _ => self.state.dialog_button,
+                };
+            }
+            // Replace: find(0), replace(1), case(2), word(3), FindNext(4), Replace(5), ReplaceAll(6), Cancel(7)
+            DialogType::Replace => {
+                self.state.dialog_button = match self.state.dialog_input_field {
+                    4 => 0, // FindNext
+                    5 => 1, // Replace
+                    6 => 2, // ReplaceAll
+                    7 => 3, // Cancel
+                    _ => self.state.dialog_button,
+                };
+            }
+            // GoToLine: line(0), OK(1), Cancel(2)
+            DialogType::GoToLine => {
+                self.state.dialog_button = match self.state.dialog_input_field {
+                    1 => 0, // OK
+                    2 => 1, // Cancel
+                    _ => self.state.dialog_button,
+                };
+            }
+            // Print: radio1(0), radio2(1), radio3(2), OK(3), Cancel(4)
+            DialogType::Print => {
+                self.state.dialog_button = match self.state.dialog_input_field {
+                    3 => 0, // OK
+                    4 => 1, // Cancel
+                    _ => self.state.dialog_button,
+                };
+            }
+            // Simple input dialogs: input(0), OK(1), Cancel(2)
+            DialogType::NewSub | DialogType::NewFunction | DialogType::FindLabel |
+            DialogType::CommandArgs | DialogType::HelpPath => {
+                self.state.dialog_button = match self.state.dialog_input_field {
+                    1 => 0, // OK
+                    2 => 1, // Cancel
+                    _ => self.state.dialog_button,
+                };
+            }
+            // DisplayOptions: tabs(0), scrollbars(1), scheme1(2), scheme2(3), scheme3(4), OK(5), Cancel(6)
+            DialogType::DisplayOptions => {
+                self.state.dialog_button = match self.state.dialog_input_field {
+                    5 => 0, // OK
+                    6 => 1, // Cancel
+                    _ => self.state.dialog_button,
+                };
+            }
+            _ => {}
+        }
+    }
+
+    /// Position cursor at end of current text field
+    fn position_cursor_for_field(&mut self) {
+        match &self.state.dialog {
+            DialogType::FileOpen | DialogType::FileSave | DialogType::FileSaveAs => {
+                match self.state.dialog_input_field {
+                    0 => self.state.dialog_input_cursor = self.state.dialog_filename.len(),
+                    1 => self.state.dialog_input_cursor = 0, // Directory field not editable
+                    _ => {}
+                }
+            }
+            DialogType::Find => {
+                if self.state.dialog_input_field == 0 {
+                    self.state.dialog_input_cursor = self.state.dialog_find_text.len();
+                }
+            }
+            DialogType::Replace => {
+                match self.state.dialog_input_field {
+                    0 => self.state.dialog_input_cursor = self.state.dialog_find_text.len(),
+                    1 => self.state.dialog_input_cursor = self.state.dialog_replace_text.len(),
+                    _ => {}
+                }
+            }
+            DialogType::GoToLine => {
+                if self.state.dialog_input_field == 0 {
+                    self.state.dialog_input_cursor = self.state.dialog_goto_line.len();
+                }
+            }
+            DialogType::NewSub | DialogType::NewFunction | DialogType::FindLabel => {
+                if self.state.dialog_input_field == 0 {
+                    self.state.dialog_input_cursor = self.state.dialog_find_text.len();
+                }
+            }
+            DialogType::CommandArgs => {
+                if self.state.dialog_input_field == 0 {
+                    self.state.dialog_input_cursor = self.state.command_args.len();
+                }
+            }
+            DialogType::HelpPath => {
+                if self.state.dialog_input_field == 0 {
+                    self.state.dialog_input_cursor = self.state.help_path.len();
+                }
+            }
+            DialogType::DisplayOptions => {
+                if self.state.dialog_input_field == 0 {
+                    self.state.dialog_input_cursor = self.state.tab_stops.to_string().len();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Check if current field is a text input field
+    fn is_current_field_text(&self) -> bool {
+        match &self.state.dialog {
+            DialogType::FileOpen | DialogType::FileSave | DialogType::FileSaveAs => {
+                self.state.dialog_input_field == 0 // filename field only
+            }
+            DialogType::Find => self.state.dialog_input_field == 0,
+            DialogType::Replace => self.state.dialog_input_field <= 1,
+            DialogType::GoToLine => self.state.dialog_input_field == 0,
+            DialogType::NewSub | DialogType::NewFunction | DialogType::FindLabel |
+            DialogType::CommandArgs | DialogType::HelpPath => self.state.dialog_input_field == 0,
+            DialogType::DisplayOptions => self.state.dialog_input_field == 0,
+            _ => false,
+        }
+    }
+
+    /// Toggle checkbox or radio button, returns true if toggled
+    fn dialog_toggle_checkbox(&mut self) -> bool {
+        match &self.state.dialog {
+            DialogType::Find => {
+                match self.state.dialog_input_field {
+                    1 => { self.state.search_case_sensitive = !self.state.search_case_sensitive; true }
+                    2 => { self.state.search_whole_word = !self.state.search_whole_word; true }
+                    _ => false,
+                }
+            }
+            DialogType::Replace => {
+                match self.state.dialog_input_field {
+                    2 => { self.state.search_case_sensitive = !self.state.search_case_sensitive; true }
+                    3 => { self.state.search_whole_word = !self.state.search_whole_word; true }
+                    _ => false,
+                }
+            }
+            DialogType::Print => {
+                // Radio buttons: 0, 1, 2 are the print options
+                match self.state.dialog_input_field {
+                    0..=2 => {
+                        // Store selected print option (could add state field for this)
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            DialogType::DisplayOptions => {
+                match self.state.dialog_input_field {
+                    1 => { self.state.show_scrollbars = !self.state.show_scrollbars; true }
+                    2 => { self.state.color_scheme = 0; true }
+                    3 => { self.state.color_scheme = 1; true }
+                    4 => { self.state.color_scheme = 2; true }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Handle cursor up in dialog
+    fn dialog_cursor_up(&mut self) {
+        match &self.state.dialog {
+            DialogType::FileOpen | DialogType::FileSave | DialogType::FileSaveAs => {
+                match self.state.dialog_input_field {
+                    2 => {
+                        // Files list - move selection up
+                        if self.state.dialog_file_index > 0 {
+                            self.state.dialog_file_index -= 1;
+                        }
+                    }
+                    3 => {
+                        // Dirs list - move selection up
+                        if self.state.dialog_dir_index > 0 {
+                            self.state.dialog_dir_index -= 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            DialogType::Replace => {
+                // Move between find and replace fields
+                if self.state.dialog_input_field == 1 {
+                    self.state.dialog_input_field = 0;
+                    self.state.dialog_input_cursor = self.state.dialog_find_text.len().min(self.state.dialog_input_cursor);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle cursor down in dialog
+    fn dialog_cursor_down(&mut self) {
+        match &self.state.dialog {
+            DialogType::FileOpen | DialogType::FileSave | DialogType::FileSaveAs => {
+                match self.state.dialog_input_field {
+                    2 => {
+                        // Files list - move selection down
+                        if self.state.dialog_file_index + 1 < self.state.dialog_files.len() {
+                            self.state.dialog_file_index += 1;
+                        }
+                    }
+                    3 => {
+                        // Dirs list - move selection down
+                        if self.state.dialog_dir_index + 1 < self.state.dialog_dirs.len() {
+                            self.state.dialog_dir_index += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            DialogType::Replace => {
+                // Move between find and replace fields
+                if self.state.dialog_input_field == 0 {
+                    self.state.dialog_input_field = 1;
+                    self.state.dialog_input_cursor = self.state.dialog_replace_text.len().min(self.state.dialog_input_cursor);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Get the current dialog text being edited
     fn get_current_dialog_text(&self) -> &str {
         match &self.state.dialog {
+            DialogType::FileOpen | DialogType::FileSave | DialogType::FileSaveAs => {
+                if self.state.dialog_input_field == 0 {
+                    &self.state.dialog_filename
+                } else {
+                    "" // Directory not editable
+                }
+            }
             DialogType::Find => &self.state.dialog_find_text,
             DialogType::Replace => {
                 if self.state.dialog_input_field == 0 {
                     &self.state.dialog_find_text
-                } else {
+                } else if self.state.dialog_input_field == 1 {
                     &self.state.dialog_replace_text
+                } else {
+                    ""
                 }
             }
             DialogType::GoToLine => &self.state.dialog_goto_line,
@@ -1716,8 +2094,8 @@ impl App {
             DialogType::CommandArgs => &self.state.command_args,
             DialogType::HelpPath => &self.state.help_path,
             DialogType::DisplayOptions => {
-                // Tab stops field
-                "" // Will need to handle specially
+                // Tab stops field - handled specially
+                ""
             }
             _ => "",
         }
@@ -1725,38 +2103,58 @@ impl App {
 
     /// Insert a character into the current dialog input
     fn dialog_insert_char(&mut self, c: char) {
+        // Only insert if we're on a text input field
+        if !self.is_current_field_text() {
+            return;
+        }
+
         let cursor = self.state.dialog_input_cursor;
         match &self.state.dialog {
+            DialogType::FileOpen | DialogType::FileSave | DialogType::FileSaveAs => {
+                if self.state.dialog_input_field == 0 {
+                    self.state.dialog_filename.insert(cursor, c);
+                    self.state.dialog_input_cursor += 1;
+                }
+            }
             DialogType::Find => {
-                self.state.dialog_find_text.insert(cursor, c);
-                self.state.dialog_input_cursor += 1;
+                if self.state.dialog_input_field == 0 {
+                    self.state.dialog_find_text.insert(cursor, c);
+                    self.state.dialog_input_cursor += 1;
+                }
             }
             DialogType::Replace => {
                 if self.state.dialog_input_field == 0 {
                     self.state.dialog_find_text.insert(cursor, c);
-                } else {
+                    self.state.dialog_input_cursor += 1;
+                } else if self.state.dialog_input_field == 1 {
                     self.state.dialog_replace_text.insert(cursor, c);
+                    self.state.dialog_input_cursor += 1;
                 }
-                self.state.dialog_input_cursor += 1;
             }
             DialogType::GoToLine => {
                 // Only allow digits
-                if c.is_ascii_digit() {
+                if self.state.dialog_input_field == 0 && c.is_ascii_digit() {
                     self.state.dialog_goto_line.insert(cursor, c);
                     self.state.dialog_input_cursor += 1;
                 }
             }
             DialogType::NewSub | DialogType::NewFunction | DialogType::FindLabel => {
-                self.state.dialog_find_text.insert(cursor, c);
-                self.state.dialog_input_cursor += 1;
+                if self.state.dialog_input_field == 0 {
+                    self.state.dialog_find_text.insert(cursor, c);
+                    self.state.dialog_input_cursor += 1;
+                }
             }
             DialogType::CommandArgs => {
-                self.state.command_args.insert(cursor, c);
-                self.state.dialog_input_cursor += 1;
+                if self.state.dialog_input_field == 0 {
+                    self.state.command_args.insert(cursor, c);
+                    self.state.dialog_input_cursor += 1;
+                }
             }
             DialogType::HelpPath => {
-                self.state.help_path.insert(cursor, c);
-                self.state.dialog_input_cursor += 1;
+                if self.state.dialog_input_field == 0 {
+                    self.state.help_path.insert(cursor, c);
+                    self.state.dialog_input_cursor += 1;
+                }
             }
             DialogType::DisplayOptions => {
                 // Only allow digits in tab stops field
@@ -1779,38 +2177,59 @@ impl App {
 
     /// Handle backspace in dialog input
     fn dialog_backspace(&mut self) {
+        // Only backspace if we're on a text input field
+        if !self.is_current_field_text() {
+            return;
+        }
         if self.state.dialog_input_cursor == 0 {
             return;
         }
         let cursor = self.state.dialog_input_cursor - 1;
         match &self.state.dialog {
+            DialogType::FileOpen | DialogType::FileSave | DialogType::FileSaveAs => {
+                if self.state.dialog_input_field == 0 && cursor < self.state.dialog_filename.len() {
+                    self.state.dialog_filename.remove(cursor);
+                    self.state.dialog_input_cursor = cursor;
+                }
+            }
             DialogType::Find => {
-                self.state.dialog_find_text.remove(cursor);
-                self.state.dialog_input_cursor = cursor;
+                if self.state.dialog_input_field == 0 && cursor < self.state.dialog_find_text.len() {
+                    self.state.dialog_find_text.remove(cursor);
+                    self.state.dialog_input_cursor = cursor;
+                }
             }
             DialogType::Replace => {
-                if self.state.dialog_input_field == 0 {
+                if self.state.dialog_input_field == 0 && cursor < self.state.dialog_find_text.len() {
                     self.state.dialog_find_text.remove(cursor);
-                } else {
+                    self.state.dialog_input_cursor = cursor;
+                } else if self.state.dialog_input_field == 1 && cursor < self.state.dialog_replace_text.len() {
                     self.state.dialog_replace_text.remove(cursor);
+                    self.state.dialog_input_cursor = cursor;
                 }
-                self.state.dialog_input_cursor = cursor;
             }
             DialogType::GoToLine => {
-                self.state.dialog_goto_line.remove(cursor);
-                self.state.dialog_input_cursor = cursor;
+                if self.state.dialog_input_field == 0 && cursor < self.state.dialog_goto_line.len() {
+                    self.state.dialog_goto_line.remove(cursor);
+                    self.state.dialog_input_cursor = cursor;
+                }
             }
             DialogType::NewSub | DialogType::NewFunction | DialogType::FindLabel => {
-                self.state.dialog_find_text.remove(cursor);
-                self.state.dialog_input_cursor = cursor;
+                if self.state.dialog_input_field == 0 && cursor < self.state.dialog_find_text.len() {
+                    self.state.dialog_find_text.remove(cursor);
+                    self.state.dialog_input_cursor = cursor;
+                }
             }
             DialogType::CommandArgs => {
-                self.state.command_args.remove(cursor);
-                self.state.dialog_input_cursor = cursor;
+                if self.state.dialog_input_field == 0 && cursor < self.state.command_args.len() {
+                    self.state.command_args.remove(cursor);
+                    self.state.dialog_input_cursor = cursor;
+                }
             }
             DialogType::HelpPath => {
-                self.state.help_path.remove(cursor);
-                self.state.dialog_input_cursor = cursor;
+                if self.state.dialog_input_field == 0 && cursor < self.state.help_path.len() {
+                    self.state.help_path.remove(cursor);
+                    self.state.dialog_input_cursor = cursor;
+                }
             }
             DialogType::DisplayOptions => {
                 if self.state.dialog_input_field == 0 {
@@ -1832,39 +2251,46 @@ impl App {
 
     /// Handle delete in dialog input
     fn dialog_delete(&mut self) {
+        // Only delete if we're on a text input field
+        if !self.is_current_field_text() {
+            return;
+        }
         let cursor = self.state.dialog_input_cursor;
         match &self.state.dialog {
+            DialogType::FileOpen | DialogType::FileSave | DialogType::FileSaveAs => {
+                if self.state.dialog_input_field == 0 && cursor < self.state.dialog_filename.len() {
+                    self.state.dialog_filename.remove(cursor);
+                }
+            }
             DialogType::Find => {
-                if cursor < self.state.dialog_find_text.len() {
+                if self.state.dialog_input_field == 0 && cursor < self.state.dialog_find_text.len() {
                     self.state.dialog_find_text.remove(cursor);
                 }
             }
             DialogType::Replace => {
-                if self.state.dialog_input_field == 0 {
-                    if cursor < self.state.dialog_find_text.len() {
-                        self.state.dialog_find_text.remove(cursor);
-                    }
-                } else if cursor < self.state.dialog_replace_text.len() {
+                if self.state.dialog_input_field == 0 && cursor < self.state.dialog_find_text.len() {
+                    self.state.dialog_find_text.remove(cursor);
+                } else if self.state.dialog_input_field == 1 && cursor < self.state.dialog_replace_text.len() {
                     self.state.dialog_replace_text.remove(cursor);
                 }
             }
             DialogType::GoToLine => {
-                if cursor < self.state.dialog_goto_line.len() {
+                if self.state.dialog_input_field == 0 && cursor < self.state.dialog_goto_line.len() {
                     self.state.dialog_goto_line.remove(cursor);
                 }
             }
             DialogType::NewSub | DialogType::NewFunction | DialogType::FindLabel => {
-                if cursor < self.state.dialog_find_text.len() {
+                if self.state.dialog_input_field == 0 && cursor < self.state.dialog_find_text.len() {
                     self.state.dialog_find_text.remove(cursor);
                 }
             }
             DialogType::CommandArgs => {
-                if cursor < self.state.command_args.len() {
+                if self.state.dialog_input_field == 0 && cursor < self.state.command_args.len() {
                     self.state.command_args.remove(cursor);
                 }
             }
             DialogType::HelpPath => {
-                if cursor < self.state.help_path.len() {
+                if self.state.dialog_input_field == 0 && cursor < self.state.help_path.len() {
                     self.state.help_path.remove(cursor);
                 }
             }
@@ -2141,7 +2567,7 @@ impl App {
             }
             if (trimmed.starts_with("IF ") || trimmed == "IF") && !trimmed.contains(" THEN ") && !trimmed.ends_with(" THEN") {
                 // Multi-line IF
-            } else if (trimmed.starts_with("IF ") && (trimmed.contains(" THEN") && !trimmed.chars().filter(|&c| c != ' ').skip_while(|&c| c != 'N').take(4).collect::<String>().contains("THEN"))) {
+            } else if trimmed.starts_with("IF ") && (trimmed.contains(" THEN") && !trimmed.chars().filter(|&c| c != ' ').skip_while(|&c| c != 'N').take(4).collect::<String>().contains("THEN")) {
                 // This is getting complex - simplified version
             }
             if trimmed == "IF" || (trimmed.starts_with("IF ") && trimmed.ends_with("THEN")) {

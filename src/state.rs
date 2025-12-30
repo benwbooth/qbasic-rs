@@ -16,6 +16,7 @@ pub enum Focus {
 pub enum RunState {
     Editing,
     Running,
+    WaitingForInput,  // Program yielded for INKEY$ - waiting for keyboard input
     Paused,  // At breakpoint
     Stepping,
     Finished,  // Program completed, waiting for key press to return to editor
@@ -23,6 +24,7 @@ pub enum RunState {
 
 /// Active dialog type
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum DialogType {
     None,
     FileOpen,
@@ -89,6 +91,9 @@ pub struct AppState {
 
     /// Number of buttons in current dialog
     pub dialog_button_count: usize,
+
+    /// Total number of focusable fields in dialog (inputs + checkboxes + buttons)
+    pub dialog_field_count: usize,
 
     /// Menu bar open
     pub menu_open: bool,
@@ -234,6 +239,10 @@ pub struct AppState {
     /// Scrollbar dragging state
     pub vscroll_dragging: bool,
     pub hscroll_dragging: bool,
+
+    /// Mouse cursor position (for rendering orange box cursor)
+    pub mouse_row: u16,
+    pub mouse_col: u16,
 }
 
 impl Default for AppState {
@@ -248,6 +257,7 @@ impl Default for AppState {
             last_screen_size: (0, 0),
             dialog_button: 0,
             dialog_button_count: 1,
+            dialog_field_count: 1,
             menu_open: false,
             menu_index: 0,
             menu_item: 0,
@@ -298,6 +308,8 @@ impl Default for AppState {
             dialog_layout: None,
             vscroll_dragging: false,
             hscroll_dragging: false,
+            mouse_row: 0,
+            mouse_col: 0,
         }
     }
 }
@@ -336,36 +348,48 @@ impl AppState {
     }
 
     /// Open a dialog with screen dimensions for centering
+    #[allow(dead_code)]
     pub fn open_dialog(&mut self, dialog: DialogType) {
         self.open_dialog_centered(dialog, 80, 25); // Default size if not specified
     }
 
     /// Open a dialog centered on screen
     pub fn open_dialog_centered(&mut self, dialog: DialogType, screen_width: u16, screen_height: u16) {
-        // Set button count and default size based on dialog type
-        let (button_count, width, height) = match &dialog {
-            DialogType::None => (0, 0, 0),
-            DialogType::About => (1, 50, 12),
-            DialogType::Message { .. } => (1, 50, 10),
-            DialogType::Help(_) => (1, 70, 20),
-            DialogType::Confirm { .. } => (3, 50, 10),
-            DialogType::NewProgram => (3, 40, 8),
-            DialogType::FileOpen | DialogType::FileSave | DialogType::FileSaveAs => (3, 60, 18),
-            DialogType::Find => (3, 55, 10),
-            DialogType::Replace => (3, 55, 12),
-            DialogType::GoToLine => (2, 40, 7),
-            DialogType::Print => (2, 50, 10),
-            DialogType::Welcome => (2, 54, 12),
-            DialogType::NewSub => (2, 45, 7),
-            DialogType::NewFunction => (2, 45, 7),
-            DialogType::FindLabel => (2, 45, 7),
-            DialogType::CommandArgs => (2, 55, 7),
-            DialogType::HelpPath => (2, 55, 7),
-            DialogType::DisplayOptions => (2, 50, 14),
+        // Set button count, field count, and default size based on dialog type
+        // field_count = total focusable elements (inputs + checkboxes + buttons)
+        let (button_count, field_count, width, height) = match &dialog {
+            DialogType::None => (0, 0, 0, 0),
+            DialogType::About => (1, 1, 50, 12),  // OK button only
+            DialogType::Message { .. } => (1, 1, 50, 10),  // OK button only
+            DialogType::Help(_) => (1, 1, 70, 20),  // Close button only
+            DialogType::Confirm { .. } => (3, 3, 50, 10),  // Yes, No, Cancel
+            DialogType::NewProgram => (3, 3, 40, 8),  // Yes, No, Cancel
+            // FileOpen: filename(0), directory(1), files(2), dirs(3), OK(4), Cancel(5), Help(6)
+            DialogType::FileOpen | DialogType::FileSave | DialogType::FileSaveAs => (3, 7, 60, 18),
+            // Find: search(0), case(1), word(2), Find(3), Cancel(4), Help(5)
+            DialogType::Find => (3, 6, 55, 10),
+            // Replace: find(0), replace(1), case(2), word(3), FindNext(4), Replace(5), ReplaceAll(6), Cancel(7)
+            DialogType::Replace => (4, 8, 55, 12),
+            // GoToLine: line(0), OK(1), Cancel(2)
+            DialogType::GoToLine => (2, 3, 40, 7),
+            // Print: radio1(0), radio2(1), radio3(2), OK(3), Cancel(4)
+            DialogType::Print => (2, 5, 50, 10),
+            // Welcome: option1(0), option2(1)
+            DialogType::Welcome => (2, 2, 54, 14),
+            // Simple input dialogs: input(0), OK(1), Cancel(2)
+            DialogType::NewSub => (2, 3, 45, 7),
+            DialogType::NewFunction => (2, 3, 45, 7),
+            DialogType::FindLabel => (2, 3, 45, 7),
+            DialogType::CommandArgs => (2, 3, 55, 7),
+            DialogType::HelpPath => (2, 3, 55, 7),
+            // DisplayOptions: tabs(0), scrollbars(1), scheme1(2), scheme2(3), scheme3(4), OK(5), Cancel(6)
+            DialogType::DisplayOptions => (2, 7, 50, 14),
         };
 
         self.dialog_button_count = button_count;
+        self.dialog_field_count = field_count;
         self.dialog_button = 0;
+        self.dialog_input_field = 0;
         self.dialog_width = width;
         self.dialog_height = height;
         self.dialog_x = (screen_width.saturating_sub(width)) / 2;
@@ -452,6 +476,7 @@ impl AppState {
     }
 
     /// Clear status message
+    #[allow(dead_code)]
     pub fn clear_status(&mut self) {
         self.status_message = None;
     }

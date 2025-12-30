@@ -3,7 +3,7 @@
 use crate::screen::Screen;
 use crate::terminal::Color;
 use crate::state::{AppState, DialogType};
-use super::layout::{Rect, LayoutItem, Size, compute_layout, file_dialog_layout};
+use super::layout::{Rect, LayoutItem, Size, compute_layout, file_dialog_layout, find_dialog_layout, replace_dialog_layout, goto_line_dialog_layout, print_dialog_layout, welcome_dialog_layout, simple_input_dialog_layout, display_options_dialog_layout};
 
 /// Dialog component
 pub struct Dialog;
@@ -43,19 +43,21 @@ impl Dialog {
         // Draw single-line box
         screen.draw_box(y, x, width, height, Color::Black, Color::LightGray);
 
-        // Title bar - inverted colors
+        // Title bar - blue background with white text (QBasic style)
+        screen.fill(y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
         let title_str = format!(" {} ", title);
         let title_x = x + (width.saturating_sub(title_str.len() as u16)) / 2;
-        screen.write_str(y, title_x, &title_str, Color::LightGray, Color::Black);
+        screen.write_str(y, title_x, &title_str, Color::White, Color::Blue);
 
-        // Window controls at top-right: ↑ (maximize), X (close)
+        // Window controls at top-right
         if width >= 10 {
-            screen.write_str(y, x + width - 7, "[↑]", Color::Black, Color::LightGray);
-            screen.write_str(y, x + width - 3, "[X]", Color::Black, Color::LightGray);
+            screen.write_str(y, x + width - 7, "[↑]", Color::White, Color::Blue);
+            screen.write_str(y, x + width - 3, "[X]", Color::White, Color::Blue);
         }
     }
 
     /// Legacy helper for dialogs that don't use state positioning yet
+    #[allow(dead_code)]
     fn draw_dialog_box(screen: &mut Screen, screen_width: u16, screen_height: u16, title: &str, dialog_width: u16, dialog_height: u16) -> (u16, u16) {
         let x = (screen_width - dialog_width) / 2;
         let y = (screen_height - dialog_height) / 2;
@@ -187,7 +189,7 @@ impl Dialog {
         state.dialog_layout = Some(compute_layout(&layout_item, bounds));
     }
 
-    pub fn draw_file_dialog(screen: &mut Screen, state: &AppState, _screen_width: u16, _screen_height: u16, title: &str, selected: usize) {
+    pub fn draw_file_dialog(screen: &mut Screen, state: &AppState, _screen_width: u16, _screen_height: u16, title: &str, _selected: usize) {
         let x = state.dialog_x;
         let y = state.dialog_y;
         let width = state.dialog_width;
@@ -206,52 +208,71 @@ impl Dialog {
         // Draw border
         screen.draw_box(y, x, width, height, Color::Black, Color::LightGray);
 
-        // Draw title bar elements
+        // Draw title bar elements (QBasic uses blue title bar with white text)
         if let Some(rect) = layout.get("title_bar") {
+            // Fill title bar with blue
+            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
             let title_str = format!(" {} ", title);
             let title_x = rect.x + (rect.width.saturating_sub(title_str.len() as u16)) / 2;
-            screen.write_str(rect.y, title_x, &title_str, Color::LightGray, Color::Black);
+            screen.write_str(rect.y, title_x, &title_str, Color::White, Color::Blue);
         }
         if let Some(rect) = layout.get("maximize") {
             // Show ↓ when maximized (to restore), ↑ when normal (to maximize)
             let icon = if state.dialog_saved_bounds.is_some() { "[↓]" } else { "[↑]" };
-            screen.write_str(rect.y, rect.x, icon, Color::Black, Color::LightGray);
+            screen.write_str(rect.y, rect.x, icon, Color::White, Color::Blue);
         }
         if let Some(rect) = layout.get("close") {
-            screen.write_str(rect.y, rect.x, "[X]", Color::Black, Color::LightGray);
+            screen.write_str(rect.y, rect.x, "[X]", Color::White, Color::Blue);
         }
 
         // Get current directory from state
         let cwd = state.dialog_path.to_string_lossy().to_string();
 
+        // Current field: 0=filename, 1=directory, 2=files, 3=dirs, 4=OK, 5=Cancel, 6=Help
+        let current_field = state.dialog_input_field;
+
         // File name field
         if let Some(label_rect) = layout.get("filename_label") {
-            screen.write_str(label_rect.y, label_rect.x, "File Name:", Color::Black, Color::LightGray);
+            let (fg, bg) = if current_field == 0 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(label_rect.y, label_rect.x, "File Name:", fg, bg);
         }
         if let Some(field_rect) = layout.get("filename_field") {
-            screen.fill(field_rect.y, field_rect.x, field_rect.width, 1, ' ', Color::Black, Color::White);
+            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            screen.fill(field_rect.y, field_rect.x, field_rect.width, 1, ' ', fg, bg);
             let display = if state.dialog_filename.is_empty() { "*.BAS" } else { &state.dialog_filename };
             let truncated: String = display.chars().take(field_rect.width as usize).collect();
-            screen.write_str(field_rect.y, field_rect.x, &truncated, Color::Black, Color::White);
+            screen.write_str(field_rect.y, field_rect.x, &truncated, fg, bg);
+
+            // Draw cursor if focused
+            if current_field == 0 {
+                let cursor_x = field_rect.x + state.dialog_input_cursor.min(field_rect.width as usize - 1) as u16;
+                let cursor_char = state.dialog_filename.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
+                screen.write_str(field_rect.y, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+            }
         }
 
-        // Directory field
+        // Directory field (read-only, just shows focus)
         if let Some(label_rect) = layout.get("directory_label") {
-            screen.write_str(label_rect.y, label_rect.x, "Directory:", Color::Black, Color::LightGray);
+            let (fg, bg) = if current_field == 1 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(label_rect.y, label_rect.x, "Directory:", fg, bg);
         }
         if let Some(field_rect) = layout.get("directory_field") {
-            screen.fill(field_rect.y, field_rect.x, field_rect.width, 1, ' ', Color::Black, Color::White);
+            let (fg, bg) = if current_field == 1 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            screen.fill(field_rect.y, field_rect.x, field_rect.width, 1, ' ', fg, bg);
             let max_len = field_rect.width as usize;
             let dir_display = if cwd.len() > max_len { &cwd[cwd.len()-max_len..] } else { &cwd };
-            screen.write_str(field_rect.y, field_rect.x, dir_display, Color::Black, Color::White);
+            screen.write_str(field_rect.y, field_rect.x, dir_display, fg, bg);
         }
 
         // Files label and list
         if let Some(rect) = layout.get("files_label") {
-            screen.write_str(rect.y, rect.x, "Files:", Color::Black, Color::LightGray);
+            let (fg, bg) = if current_field == 2 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, "Files:", fg, bg);
         }
         if let Some(list_rect) = layout.get("files_list") {
-            screen.draw_box(list_rect.y, list_rect.x, list_rect.width, list_rect.height, Color::Black, Color::White);
+            let box_fg = if current_field == 2 { Color::Black } else { Color::Black };
+            let box_bg = if current_field == 2 { Color::Cyan } else { Color::White };
+            screen.draw_box(list_rect.y, list_rect.x, list_rect.width, list_rect.height, box_fg, box_bg);
             let max_items = list_rect.height.saturating_sub(2) as usize;
             let item_width = list_rect.width.saturating_sub(2) as usize;
 
@@ -270,10 +291,13 @@ impl Dialog {
 
         // Directories label and list
         if let Some(rect) = layout.get("dirs_label") {
-            screen.write_str(rect.y, rect.x, "Dirs/Drives:", Color::Black, Color::LightGray);
+            let (fg, bg) = if current_field == 3 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, "Dirs/Drives:", fg, bg);
         }
         if let Some(list_rect) = layout.get("dirs_list") {
-            screen.draw_box(list_rect.y, list_rect.x, list_rect.width, list_rect.height, Color::Black, Color::White);
+            let box_fg = if current_field == 3 { Color::Black } else { Color::Black };
+            let box_bg = if current_field == 3 { Color::Cyan } else { Color::White };
+            screen.draw_box(list_rect.y, list_rect.x, list_rect.width, list_rect.height, box_fg, box_bg);
             let max_items = list_rect.height.saturating_sub(2) as usize;
             let item_width = list_rect.width.saturating_sub(2) as usize;
 
@@ -291,114 +315,251 @@ impl Dialog {
             }
         }
 
-        // Buttons
+        // Buttons - use current_field to determine selection
         if let Some(rect) = layout.get("ok_button") {
-            Self::draw_button(screen, rect.y, rect.x, "OK", selected == 0);
+            Self::draw_button(screen, rect.y, rect.x, "OK", current_field == 4);
         }
         if let Some(rect) = layout.get("cancel_button") {
-            Self::draw_button(screen, rect.y, rect.x, "Cancel", selected == 1);
+            Self::draw_button(screen, rect.y, rect.x, "Cancel", current_field == 5);
         }
         if let Some(rect) = layout.get("help_button") {
-            Self::draw_button(screen, rect.y, rect.x, "Help", selected == 2);
+            Self::draw_button(screen, rect.y, rect.x, "Help", current_field == 6);
         }
     }
 
-    pub fn draw_find_dialog(screen: &mut Screen, state: &AppState, screen_width: u16, screen_height: u16, selected: usize) {
-        let (x, y) = Self::draw_dialog_box(screen, screen_width, screen_height, "Find", 55, 10);
+    pub fn draw_find_dialog(screen: &mut Screen, state: &AppState, _screen_width: u16, _screen_height: u16, _selected: usize) {
+        let x = state.dialog_x;
+        let y = state.dialog_y;
+        let width = state.dialog_width;
+        let height = state.dialog_height;
 
-        // Search field
-        screen.write_str(y + 2, x + 2, "Find What:", Color::Black, Color::LightGray);
-        screen.fill(y + 2, x + 14, 38, 1, ' ', Color::Black, Color::White);
+        // Compute layout
+        let bounds = Rect::new(x, y, width, height);
+        let layout = compute_layout(&find_dialog_layout(), bounds);
 
-        // Draw the input text
-        let text = &state.dialog_find_text;
-        let display_text: String = text.chars().take(37).collect();
-        screen.write_str(y + 2, x + 14, &display_text, Color::Black, Color::White);
+        // Draw dialog background and border
+        screen.draw_shadow(y, x, width, height);
+        screen.fill(y, x, width, height, ' ', Color::Black, Color::LightGray);
+        screen.draw_box(y, x, width, height, Color::Black, Color::LightGray);
 
-        // Draw cursor if this field is focused (field 0)
-        if state.dialog_input_field == 0 {
-            let cursor_x = x + 14 + state.dialog_input_cursor.min(37) as u16;
-            let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
-            screen.write_str(y + 2, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+        // Title bar (blue with white text)
+        if let Some(rect) = layout.get("title_bar") {
+            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
+            let title = " Find ";
+            let title_x = rect.x + (rect.width.saturating_sub(title.len() as u16)) / 2;
+            screen.write_str(rect.y, title_x, title, Color::White, Color::Blue);
         }
 
-        // Options
-        let case_mark = if state.search_case_sensitive { "X" } else { " " };
-        let word_mark = if state.search_whole_word { "X" } else { " " };
-        screen.write_str(y + 4, x + 2, &format!("[{}] Match Upper/Lowercase", case_mark), Color::Black, Color::LightGray);
-        screen.write_str(y + 5, x + 2, &format!("[{}] Whole Word", word_mark), Color::Black, Color::LightGray);
+        // Fields: 0=search, 1=case checkbox, 2=word checkbox, 3=Find, 4=Cancel, 5=Help
+        let current_field = state.dialog_input_field;
+
+        // Find label
+        if let Some(rect) = layout.get("find_label") {
+            let (fg, bg) = if current_field == 0 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, "Find:", fg, bg);
+        }
+
+        // Find field
+        if let Some(rect) = layout.get("find_field") {
+            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            screen.fill(rect.y, rect.x, rect.width, 1, ' ', fg, bg);
+
+            let text = &state.dialog_find_text;
+            let max_chars = rect.width.saturating_sub(1) as usize;
+            let display_text: String = text.chars().take(max_chars).collect();
+            screen.write_str(rect.y, rect.x, &display_text, fg, bg);
+
+            // Draw cursor if focused
+            if current_field == 0 {
+                let cursor_x = rect.x + state.dialog_input_cursor.min(max_chars) as u16;
+                let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
+                screen.write_str(rect.y, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+            }
+        }
+
+        // Case checkbox
+        if let Some(rect) = layout.get("case_checkbox") {
+            let mark = if state.search_case_sensitive { "X" } else { " " };
+            let (fg, bg) = if current_field == 1 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, &format!("[{}] Match Case", mark), fg, bg);
+        }
+
+        // Whole word checkbox
+        if let Some(rect) = layout.get("whole_checkbox") {
+            let mark = if state.search_whole_word { "X" } else { " " };
+            let (fg, bg) = if current_field == 2 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, &format!("[{}] Whole Word", mark), fg, bg);
+        }
 
         // Buttons
-        Self::draw_button(screen, y + 8, x + 10, "Find", selected == 0);
-        Self::draw_button(screen, y + 8, x + 25, "Cancel", selected == 1);
-        Self::draw_button(screen, y + 8, x + 40, "Help", selected == 2);
+        if let Some(rect) = layout.get("ok_button") {
+            Self::draw_button(screen, rect.y, rect.x, "Find", current_field == 3);
+        }
+        if let Some(rect) = layout.get("cancel_button") {
+            Self::draw_button(screen, rect.y, rect.x, "Cancel", current_field == 4);
+        }
+        if let Some(rect) = layout.get("help_button") {
+            Self::draw_button(screen, rect.y, rect.x, "Help", current_field == 5);
+        }
     }
 
-    pub fn draw_replace_dialog(screen: &mut Screen, state: &AppState, screen_width: u16, screen_height: u16, selected: usize) {
-        let (x, y) = Self::draw_dialog_box(screen, screen_width, screen_height, "Change", 55, 12);
+    pub fn draw_replace_dialog(screen: &mut Screen, state: &AppState, _screen_width: u16, _screen_height: u16, _selected: usize) {
+        let x = state.dialog_x;
+        let y = state.dialog_y;
+        let width = state.dialog_width;
+        let height = state.dialog_height;
 
-        // Search field
-        screen.write_str(y + 2, x + 2, "Find What:", Color::Black, Color::LightGray);
-        screen.fill(y + 2, x + 14, 38, 1, ' ', Color::Black, Color::White);
+        // Compute layout
+        let bounds = Rect::new(x, y, width, height);
+        let layout = compute_layout(&replace_dialog_layout(), bounds);
 
-        // Draw find input text
-        let find_text = &state.dialog_find_text;
-        let find_display: String = find_text.chars().take(37).collect();
-        screen.write_str(y + 2, x + 14, &find_display, Color::Black, Color::White);
+        // Draw dialog background and border
+        screen.draw_shadow(y, x, width, height);
+        screen.fill(y, x, width, height, ' ', Color::Black, Color::LightGray);
+        screen.draw_box(y, x, width, height, Color::Black, Color::LightGray);
 
-        // Draw cursor on find field if focused (field 0)
-        if state.dialog_input_field == 0 {
-            let cursor_x = x + 14 + state.dialog_input_cursor.min(37) as u16;
-            let cursor_char = find_text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
-            screen.write_str(y + 2, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+        // Title bar (blue with white text)
+        if let Some(rect) = layout.get("title_bar") {
+            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
+            let title = " Change ";
+            let title_x = rect.x + (rect.width.saturating_sub(title.len() as u16)) / 2;
+            screen.write_str(rect.y, title_x, title, Color::White, Color::Blue);
+        }
+
+        // Fields: 0=find, 1=replace, 2=case, 3=word, 4=Find&Verify, 5=ChangeAll, 6=Cancel
+        let current_field = state.dialog_input_field;
+
+        // Find label
+        if let Some(rect) = layout.get("find_label") {
+            let (fg, bg) = if current_field == 0 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, "Find What:", fg, bg);
+        }
+
+        // Find field
+        if let Some(rect) = layout.get("find_field") {
+            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            screen.fill(rect.y, rect.x, rect.width, 1, ' ', fg, bg);
+
+            let text = &state.dialog_find_text;
+            let max_chars = rect.width.saturating_sub(1) as usize;
+            let display_text: String = text.chars().take(max_chars).collect();
+            screen.write_str(rect.y, rect.x, &display_text, fg, bg);
+
+            if current_field == 0 {
+                let cursor_x = rect.x + state.dialog_input_cursor.min(max_chars) as u16;
+                let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
+                screen.write_str(rect.y, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+            }
+        }
+
+        // Replace label
+        if let Some(rect) = layout.get("replace_label") {
+            let (fg, bg) = if current_field == 1 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, "Change To:", fg, bg);
         }
 
         // Replace field
-        screen.write_str(y + 4, x + 2, "Change To:", Color::Black, Color::LightGray);
-        screen.fill(y + 4, x + 14, 38, 1, ' ', Color::Black, Color::White);
+        if let Some(rect) = layout.get("replace_field") {
+            let (fg, bg) = if current_field == 1 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            screen.fill(rect.y, rect.x, rect.width, 1, ' ', fg, bg);
 
-        // Draw replace input text
-        let replace_text = &state.dialog_replace_text;
-        let replace_display: String = replace_text.chars().take(37).collect();
-        screen.write_str(y + 4, x + 14, &replace_display, Color::Black, Color::White);
+            let text = &state.dialog_replace_text;
+            let max_chars = rect.width.saturating_sub(1) as usize;
+            let display_text: String = text.chars().take(max_chars).collect();
+            screen.write_str(rect.y, rect.x, &display_text, fg, bg);
 
-        // Draw cursor on replace field if focused (field 1)
-        if state.dialog_input_field == 1 {
-            let cursor_x = x + 14 + state.dialog_input_cursor.min(37) as u16;
-            let cursor_char = replace_text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
-            screen.write_str(y + 4, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+            if current_field == 1 {
+                let cursor_x = rect.x + state.dialog_input_cursor.min(max_chars) as u16;
+                let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
+                screen.write_str(rect.y, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+            }
         }
 
-        // Options
-        let case_mark = if state.search_case_sensitive { "X" } else { " " };
-        let word_mark = if state.search_whole_word { "X" } else { " " };
-        screen.write_str(y + 6, x + 2, &format!("[{}] Match Upper/Lowercase", case_mark), Color::Black, Color::LightGray);
-        screen.write_str(y + 7, x + 2, &format!("[{}] Whole Word", word_mark), Color::Black, Color::LightGray);
+        // Case checkbox
+        if let Some(rect) = layout.get("case_checkbox") {
+            let mark = if state.search_case_sensitive { "X" } else { " " };
+            let (fg, bg) = if current_field == 2 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, &format!("[{}] Match Case", mark), fg, bg);
+        }
+
+        // Whole word checkbox
+        if let Some(rect) = layout.get("whole_checkbox") {
+            let mark = if state.search_whole_word { "X" } else { " " };
+            let (fg, bg) = if current_field == 3 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, &format!("[{}] Whole Word", mark), fg, bg);
+        }
 
         // Buttons
-        Self::draw_button(screen, y + 10, x + 5, "Find & Verify", selected == 0);
-        Self::draw_button(screen, y + 10, x + 22, "Change All", selected == 1);
-        Self::draw_button(screen, y + 10, x + 36, "Cancel", selected == 2);
+        if let Some(rect) = layout.get("find_next_button") {
+            Self::draw_button(screen, rect.y, rect.x, "Find Next", current_field == 4);
+        }
+        if let Some(rect) = layout.get("replace_button") {
+            Self::draw_button(screen, rect.y, rect.x, "Replace", current_field == 5);
+        }
+        if let Some(rect) = layout.get("replace_all_button") {
+            Self::draw_button(screen, rect.y, rect.x, "Replace All", current_field == 6);
+        }
+        if let Some(rect) = layout.get("cancel_button") {
+            Self::draw_button(screen, rect.y, rect.x, "Cancel", current_field == 7);
+        }
     }
 
-    pub fn draw_goto_dialog(screen: &mut Screen, state: &AppState, screen_width: u16, screen_height: u16, selected: usize) {
-        let (x, y) = Self::draw_dialog_box(screen, screen_width, screen_height, "Go To Line", 40, 7);
+    pub fn draw_goto_dialog(screen: &mut Screen, state: &AppState, _screen_width: u16, _screen_height: u16, _selected: usize) {
+        let x = state.dialog_x;
+        let y = state.dialog_y;
+        let width = state.dialog_width;
+        let height = state.dialog_height;
 
-        screen.write_str(y + 2, x + 2, "Line number:", Color::Black, Color::LightGray);
-        screen.fill(y + 2, x + 16, 20, 1, ' ', Color::Black, Color::White);
+        // Compute layout
+        let bounds = Rect::new(x, y, width, height);
+        let layout = compute_layout(&goto_line_dialog_layout(), bounds);
 
-        // Draw the input text
-        let text = &state.dialog_goto_line;
-        let display_text: String = text.chars().take(19).collect();
-        screen.write_str(y + 2, x + 16, &display_text, Color::Black, Color::White);
+        // Draw dialog background and border
+        screen.draw_shadow(y, x, width, height);
+        screen.fill(y, x, width, height, ' ', Color::Black, Color::LightGray);
+        screen.draw_box(y, x, width, height, Color::Black, Color::LightGray);
 
-        // Draw cursor
-        let cursor_x = x + 16 + state.dialog_input_cursor.min(19) as u16;
-        let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
-        screen.write_str(y + 2, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+        // Title bar (blue with white text)
+        if let Some(rect) = layout.get("title_bar") {
+            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
+            let title = " Go To Line ";
+            let title_x = rect.x + (rect.width.saturating_sub(title.len() as u16)) / 2;
+            screen.write_str(rect.y, title_x, title, Color::White, Color::Blue);
+        }
 
-        Self::draw_button(screen, y + 5, x + 8, "OK", selected == 0);
-        Self::draw_button(screen, y + 5, x + 20, "Cancel", selected == 1);
+        // Fields: 0=line number, 1=OK, 2=Cancel
+        let current_field = state.dialog_input_field;
+
+        // Line label
+        if let Some(rect) = layout.get("line_label") {
+            let (fg, bg) = if current_field == 0 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, "Line number:", fg, bg);
+        }
+
+        // Line field
+        if let Some(rect) = layout.get("line_field") {
+            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            screen.fill(rect.y, rect.x, rect.width, 1, ' ', fg, bg);
+
+            let text = &state.dialog_goto_line;
+            let max_chars = rect.width.saturating_sub(1) as usize;
+            let display_text: String = text.chars().take(max_chars).collect();
+            screen.write_str(rect.y, rect.x, &display_text, fg, bg);
+
+            if current_field == 0 {
+                let cursor_x = rect.x + state.dialog_input_cursor.min(max_chars) as u16;
+                let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
+                screen.write_str(rect.y, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+            }
+        }
+
+        // Buttons
+        if let Some(rect) = layout.get("ok_button") {
+            Self::draw_button(screen, rect.y, rect.x, "OK", current_field == 1);
+        }
+        if let Some(rect) = layout.get("cancel_button") {
+            Self::draw_button(screen, rect.y, rect.x, "Cancel", current_field == 2);
+        }
     }
 
     fn draw_help(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, topic: &str, selected: usize) {
@@ -466,354 +627,278 @@ impl Dialog {
         state.dialog_layout = Some(compute_layout(&layout_item, bounds));
     }
 
-    fn draw_print_dialog(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, selected: usize) {
+    fn draw_print_dialog(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, _selected: usize) {
         let x = state.dialog_x;
         let y = state.dialog_y;
         let width = state.dialog_width;
         let height = state.dialog_height;
 
-        Self::draw_dialog_box_at(screen, x, y, width, height, "Print");
+        // Compute layout
+        let bounds = Rect::new(x, y, width, height);
+        let layout = compute_layout(&print_dialog_layout(), bounds);
 
-        screen.write_str(y + 2, x + 2, "Print:", Color::Black, Color::LightGray);
-        screen.write_str(y + 3, x + 4, "(o) Selected Text Only", Color::Black, Color::LightGray);
-        screen.write_str(y + 4, x + 4, "( ) Current Window", Color::Black, Color::LightGray);
-        screen.write_str(y + 5, x + 4, "( ) Entire Program", Color::Black, Color::LightGray);
+        // Draw dialog background and border
+        screen.draw_shadow(y, x, width, height);
+        screen.fill(y, x, width, height, ' ', Color::Black, Color::LightGray);
+        screen.draw_box(y, x, width, height, Color::Black, Color::LightGray);
 
-        Self::draw_button(screen, y + height - 2, x + 10, "OK", selected == 0);
-        Self::draw_button(screen, y + height - 2, x + 25, "Cancel", selected == 1);
+        // Title bar (blue with white text)
+        if let Some(rect) = layout.get("title_bar") {
+            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
+            let title = " Print ";
+            let title_x = rect.x + (rect.width.saturating_sub(title.len() as u16)) / 2;
+            screen.write_str(rect.y, title_x, title, Color::White, Color::Blue);
+        }
+
+        // Fields: 0=selected text, 1=current window, 2=entire program, 3=OK, 4=Cancel
+        let current_field = state.dialog_input_field;
+
+        // Radio buttons
+        if let Some(rect) = layout.get("option_selected") {
+            let mark = if current_field == 0 { "o" } else { " " };
+            let (fg, bg) = if current_field == 0 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, &format!("({}) Selected Text Only", mark), fg, bg);
+        }
+        if let Some(rect) = layout.get("option_range") {
+            let mark = if current_field == 1 { "o" } else { " " };
+            let (fg, bg) = if current_field == 1 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, &format!("({}) Current Window", mark), fg, bg);
+        }
+
+        // Buttons
+        if let Some(rect) = layout.get("ok_button") {
+            Self::draw_button(screen, rect.y, rect.x, "OK", current_field == 3);
+        }
+        if let Some(rect) = layout.get("cancel_button") {
+            Self::draw_button(screen, rect.y, rect.x, "Cancel", current_field == 4);
+        }
 
         // Cache layout for hit testing
-        let layout_item = LayoutItem::vstack(vec![
-            LayoutItem::leaf("title_bar").fixed_height(1),
-            LayoutItem::spacer().height(Size::Flex(1)),
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer().fixed_width(10),
-                LayoutItem::leaf("ok_button").fixed_width(8),
-                LayoutItem::spacer().fixed_width(7),
-                LayoutItem::leaf("cancel_button").fixed_width(11),
-                LayoutItem::spacer(),
-            ]).fixed_height(1),
-            LayoutItem::spacer().fixed_height(1),
-        ]);
-        let bounds = Rect::new(x, y, width, height);
-        state.dialog_layout = Some(compute_layout(&layout_item, bounds));
+        state.dialog_layout = Some(layout);
     }
 
-    fn draw_welcome(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, selected: usize) {
+    fn draw_welcome(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, _selected: usize) {
         let x = state.dialog_x;
         let y = state.dialog_y;
         let width = state.dialog_width;
         let height = state.dialog_height;
 
-        Self::draw_dialog_box_at(screen, x, y, width, height, "Welcome");
+        // Compute layout
+        let bounds = Rect::new(x, y, width, height);
+        let layout = compute_layout(&welcome_dialog_layout(), bounds);
 
-        // Welcome message matching real QBasic
-        let center_x = x + width / 2;
+        // Draw dialog background and border
+        screen.draw_shadow(y, x, width, height);
+        screen.fill(y, x, width, height, ' ', Color::Black, Color::LightGray);
+        screen.draw_box(y, x, width, height, Color::Black, Color::LightGray);
 
-        // Title line
-        let title = "Welcome to MS-DOS QBasic";
-        screen.write_str(y + 2, center_x - (title.len() as u16 / 2), title, Color::Black, Color::LightGray);
+        // Title bar (blue with white text)
+        if let Some(rect) = layout.get("title_bar") {
+            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
+            let title = " Welcome ";
+            let title_x = rect.x + (rect.width.saturating_sub(title.len() as u16)) / 2;
+            screen.write_str(rect.y, title_x, title, Color::White, Color::Blue);
+        }
 
-        // Copyright
-        let copy1 = "Copyright (C) Microsoft Corporation, 1987-1992.";
-        screen.write_str(y + 4, center_x - (copy1.len() as u16 / 2), copy1, Color::Black, Color::LightGray);
+        // Buttons: 0=start button, 1=exit button
+        let current_button = state.dialog_button;
 
-        // Options with angle brackets - highlighted based on selection
-        let opt1 = "< Press Enter to see the Survival Guide >";
-        let opt2 = "< Press ESC to clear this dialog box >";
+        // Welcome text (centered in dialog)
+        if let Some(rect) = layout.get("welcome_text") {
+            let title = "Welcome to MS-DOS QBasic";
+            let title_x = rect.x + (rect.width.saturating_sub(title.len() as u16)) / 2;
+            screen.write_str(rect.y, title_x, title, Color::Black, Color::LightGray);
+        }
 
-        let (fg1, bg1) = if selected == 0 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
-        let (fg2, bg2) = if selected == 1 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+        // Copyright text
+        if let Some(rect) = layout.get("copyright") {
+            let copy1 = "Copyright (C) Microsoft Corporation, 1987-1992.";
+            let copy_x = rect.x + (rect.width.saturating_sub(copy1.len() as u16)) / 2;
+            screen.write_str(rect.y, copy_x, copy1, Color::Black, Color::LightGray);
+        }
 
-        screen.write_str(y + 7, center_x - (opt1.len() as u16 / 2), opt1, fg1, bg1);
-        screen.write_str(y + 9, center_x - (opt2.len() as u16 / 2), opt2, fg2, bg2);
+        // Option buttons (now on separate lines)
+        if let Some(rect) = layout.get("start_button") {
+            let opt = "< Press Enter to see the Survival Guide >";
+            let (fg, bg) = if current_button == 0 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            let opt_x = rect.x + (rect.width.saturating_sub(opt.len() as u16)) / 2;
+            screen.write_str(rect.y, opt_x, opt, fg, bg);
+        }
+        if let Some(rect) = layout.get("exit_button") {
+            let opt = "< Press ESC to clear this dialog box >";
+            let (fg, bg) = if current_button == 1 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            let opt_x = rect.x + (rect.width.saturating_sub(opt.len() as u16)) / 2;
+            screen.write_str(rect.y, opt_x, opt, fg, bg);
+        }
 
         // Cache layout for hit testing
-        let layout_item = LayoutItem::vstack(vec![
-            LayoutItem::leaf("title_bar").fixed_height(1),
-            LayoutItem::spacer().fixed_height(6),
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer(),
-                LayoutItem::leaf("start_button").fixed_width(opt1.len() as u16),
-                LayoutItem::spacer(),
-            ]).fixed_height(1),
-            LayoutItem::spacer().fixed_height(1),
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer(),
-                LayoutItem::leaf("exit_button").fixed_width(opt2.len() as u16),
-                LayoutItem::spacer(),
-            ]).fixed_height(1),
-            LayoutItem::spacer().height(Size::Flex(1)),
-        ]);
-        let bounds = Rect::new(x, y, width, height);
-        state.dialog_layout = Some(compute_layout(&layout_item, bounds));
+        state.dialog_layout = Some(layout);
     }
 
-    fn draw_new_sub(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, selected: usize) {
+    /// Helper to draw simple input dialogs (NewSub, NewFunction, FindLabel, CommandArgs, HelpPath)
+    fn draw_simple_input_dialog(screen: &mut Screen, state: &mut AppState, title: &str, label: &str, text: &str) {
         let x = state.dialog_x;
         let y = state.dialog_y;
         let width = state.dialog_width;
         let height = state.dialog_height;
 
-        Self::draw_dialog_box_at(screen, x, y, width, height, "New SUB");
-
-        screen.write_str(y + 2, x + 2, "SUB name:", Color::Black, Color::LightGray);
-        screen.fill(y + 2, x + 13, width - 16, 1, ' ', Color::Black, Color::White);
-
-        // Draw the input text
-        let text = &state.dialog_find_text; // Reuse dialog_find_text for input
-        let max_len = (width - 17) as usize;
-        let display_text: String = text.chars().take(max_len).collect();
-        screen.write_str(y + 2, x + 13, &display_text, Color::Black, Color::White);
-
-        // Draw cursor
-        let cursor_x = x + 13 + state.dialog_input_cursor.min(max_len) as u16;
-        let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
-        screen.write_str(y + 2, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
-
-        Self::draw_button(screen, y + height - 2, x + 8, "OK", selected == 0);
-        Self::draw_button(screen, y + height - 2, x + 22, "Cancel", selected == 1);
-
-        let layout_item = LayoutItem::vstack(vec![
-            LayoutItem::leaf("title_bar").fixed_height(1),
-            LayoutItem::spacer().height(Size::Flex(1)),
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer().fixed_width(8),
-                LayoutItem::leaf("ok_button").fixed_width(8),
-                LayoutItem::spacer().fixed_width(6),
-                LayoutItem::leaf("cancel_button").fixed_width(11),
-                LayoutItem::spacer(),
-            ]).fixed_height(1),
-            LayoutItem::spacer().fixed_height(1),
-        ]);
+        // Compute layout
         let bounds = Rect::new(x, y, width, height);
-        state.dialog_layout = Some(compute_layout(&layout_item, bounds));
+        let layout = compute_layout(&simple_input_dialog_layout(), bounds);
+
+        // Draw dialog background and border
+        screen.draw_shadow(y, x, width, height);
+        screen.fill(y, x, width, height, ' ', Color::Black, Color::LightGray);
+        screen.draw_box(y, x, width, height, Color::Black, Color::LightGray);
+
+        // Title bar (blue with white text)
+        if let Some(rect) = layout.get("title_bar") {
+            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
+            let title_str = format!(" {} ", title);
+            let title_x = rect.x + (rect.width.saturating_sub(title_str.len() as u16)) / 2;
+            screen.write_str(rect.y, title_x, &title_str, Color::White, Color::Blue);
+        }
+
+        // Fields: 0=input, 1=OK, 2=Cancel
+        let current_field = state.dialog_input_field;
+
+        // Input label
+        if let Some(rect) = layout.get("input_label") {
+            let (fg, bg) = if current_field == 0 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, label, fg, bg);
+        }
+
+        // Input field
+        if let Some(rect) = layout.get("input_field") {
+            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            screen.fill(rect.y, rect.x, rect.width, 1, ' ', fg, bg);
+
+            let max_chars = rect.width.saturating_sub(1) as usize;
+            let display_text: String = text.chars().take(max_chars).collect();
+            screen.write_str(rect.y, rect.x, &display_text, fg, bg);
+
+            if current_field == 0 {
+                let cursor_x = rect.x + state.dialog_input_cursor.min(max_chars) as u16;
+                let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
+                screen.write_str(rect.y, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+            }
+        }
+
+        // Buttons
+        if let Some(rect) = layout.get("ok_button") {
+            Self::draw_button(screen, rect.y, rect.x, "OK", current_field == 1);
+        }
+        if let Some(rect) = layout.get("cancel_button") {
+            Self::draw_button(screen, rect.y, rect.x, "Cancel", current_field == 2);
+        }
+
+        // Cache layout for hit testing
+        state.dialog_layout = Some(layout);
     }
 
-    fn draw_new_function(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, selected: usize) {
+    fn draw_new_sub(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, _selected: usize) {
+        Self::draw_simple_input_dialog(screen, state, "New SUB", "SUB name:", &state.dialog_find_text.clone());
+    }
+
+    fn draw_new_function(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, _selected: usize) {
+        Self::draw_simple_input_dialog(screen, state, "New FUNCTION", "FUNCTION:", &state.dialog_find_text.clone());
+    }
+
+    fn draw_find_label(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, _selected: usize) {
+        Self::draw_simple_input_dialog(screen, state, "Find Label", "Label:", &state.dialog_find_text.clone());
+    }
+
+    fn draw_command_args(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, _selected: usize) {
+        Self::draw_simple_input_dialog(screen, state, "Modify COMMAND$", "Command:", &state.command_args.clone());
+    }
+
+    fn draw_help_path(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, _selected: usize) {
+        Self::draw_simple_input_dialog(screen, state, "Help Path", "Path:", &state.help_path.clone());
+    }
+
+    fn draw_display_options(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, _selected: usize) {
         let x = state.dialog_x;
         let y = state.dialog_y;
         let width = state.dialog_width;
         let height = state.dialog_height;
 
-        Self::draw_dialog_box_at(screen, x, y, width, height, "New FUNCTION");
-
-        screen.write_str(y + 2, x + 2, "FUNCTION name:", Color::Black, Color::LightGray);
-        screen.fill(y + 2, x + 18, width - 21, 1, ' ', Color::Black, Color::White);
-
-        // Draw the input text
-        let text = &state.dialog_find_text;
-        let max_len = (width - 22) as usize;
-        let display_text: String = text.chars().take(max_len).collect();
-        screen.write_str(y + 2, x + 18, &display_text, Color::Black, Color::White);
-
-        // Draw cursor
-        let cursor_x = x + 18 + state.dialog_input_cursor.min(max_len) as u16;
-        let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
-        screen.write_str(y + 2, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
-
-        Self::draw_button(screen, y + height - 2, x + 8, "OK", selected == 0);
-        Self::draw_button(screen, y + height - 2, x + 22, "Cancel", selected == 1);
-
-        let layout_item = LayoutItem::vstack(vec![
-            LayoutItem::leaf("title_bar").fixed_height(1),
-            LayoutItem::spacer().height(Size::Flex(1)),
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer().fixed_width(8),
-                LayoutItem::leaf("ok_button").fixed_width(8),
-                LayoutItem::spacer().fixed_width(6),
-                LayoutItem::leaf("cancel_button").fixed_width(11),
-                LayoutItem::spacer(),
-            ]).fixed_height(1),
-            LayoutItem::spacer().fixed_height(1),
-        ]);
+        // Compute layout
         let bounds = Rect::new(x, y, width, height);
-        state.dialog_layout = Some(compute_layout(&layout_item, bounds));
-    }
+        let layout = compute_layout(&display_options_dialog_layout(), bounds);
 
-    fn draw_find_label(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, selected: usize) {
-        let x = state.dialog_x;
-        let y = state.dialog_y;
-        let width = state.dialog_width;
-        let height = state.dialog_height;
+        // Draw dialog background and border
+        screen.draw_shadow(y, x, width, height);
+        screen.fill(y, x, width, height, ' ', Color::Black, Color::LightGray);
+        screen.draw_box(y, x, width, height, Color::Black, Color::LightGray);
 
-        Self::draw_dialog_box_at(screen, x, y, width, height, "Find Label");
+        // Title bar (blue with white text)
+        if let Some(rect) = layout.get("title_bar") {
+            screen.fill(rect.y, x + 1, width - 2, 1, ' ', Color::White, Color::Blue);
+            let title = " Display ";
+            let title_x = rect.x + (rect.width.saturating_sub(title.len() as u16)) / 2;
+            screen.write_str(rect.y, title_x, title, Color::White, Color::Blue);
+        }
 
-        screen.write_str(y + 2, x + 2, "Label:", Color::Black, Color::LightGray);
-        screen.fill(y + 2, x + 10, width - 13, 1, ' ', Color::Black, Color::White);
-
-        // Draw the input text
-        let text = &state.dialog_find_text;
-        let max_len = (width - 14) as usize;
-        let display_text: String = text.chars().take(max_len).collect();
-        screen.write_str(y + 2, x + 10, &display_text, Color::Black, Color::White);
-
-        // Draw cursor
-        let cursor_x = x + 10 + state.dialog_input_cursor.min(max_len) as u16;
-        let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
-        screen.write_str(y + 2, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
-
-        Self::draw_button(screen, y + height - 2, x + 8, "OK", selected == 0);
-        Self::draw_button(screen, y + height - 2, x + 22, "Cancel", selected == 1);
-
-        let layout_item = LayoutItem::vstack(vec![
-            LayoutItem::leaf("title_bar").fixed_height(1),
-            LayoutItem::spacer().height(Size::Flex(1)),
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer().fixed_width(8),
-                LayoutItem::leaf("ok_button").fixed_width(8),
-                LayoutItem::spacer().fixed_width(6),
-                LayoutItem::leaf("cancel_button").fixed_width(11),
-                LayoutItem::spacer(),
-            ]).fixed_height(1),
-            LayoutItem::spacer().fixed_height(1),
-        ]);
-        let bounds = Rect::new(x, y, width, height);
-        state.dialog_layout = Some(compute_layout(&layout_item, bounds));
-    }
-
-    fn draw_command_args(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, selected: usize) {
-        let x = state.dialog_x;
-        let y = state.dialog_y;
-        let width = state.dialog_width;
-        let height = state.dialog_height;
-
-        Self::draw_dialog_box_at(screen, x, y, width, height, "Modify COMMAND$");
-
-        screen.write_str(y + 2, x + 2, "Command line:", Color::Black, Color::LightGray);
-        screen.fill(y + 2, x + 17, width - 20, 1, ' ', Color::Black, Color::White);
-
-        // Draw the input text (use command_args instead of dialog_find_text)
-        let text = &state.command_args;
-        let max_len = (width - 21) as usize;
-        let display_text: String = text.chars().take(max_len).collect();
-        screen.write_str(y + 2, x + 17, &display_text, Color::Black, Color::White);
-
-        // Draw cursor
-        let cursor_x = x + 17 + state.dialog_input_cursor.min(max_len) as u16;
-        let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
-        screen.write_str(y + 2, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
-
-        Self::draw_button(screen, y + height - 2, x + 12, "OK", selected == 0);
-        Self::draw_button(screen, y + height - 2, x + 28, "Cancel", selected == 1);
-
-        let layout_item = LayoutItem::vstack(vec![
-            LayoutItem::leaf("title_bar").fixed_height(1),
-            LayoutItem::spacer().height(Size::Flex(1)),
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer().fixed_width(12),
-                LayoutItem::leaf("ok_button").fixed_width(8),
-                LayoutItem::spacer().fixed_width(8),
-                LayoutItem::leaf("cancel_button").fixed_width(11),
-                LayoutItem::spacer(),
-            ]).fixed_height(1),
-            LayoutItem::spacer().fixed_height(1),
-        ]);
-        let bounds = Rect::new(x, y, width, height);
-        state.dialog_layout = Some(compute_layout(&layout_item, bounds));
-    }
-
-    fn draw_help_path(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, selected: usize) {
-        let x = state.dialog_x;
-        let y = state.dialog_y;
-        let width = state.dialog_width;
-        let height = state.dialog_height;
-
-        Self::draw_dialog_box_at(screen, x, y, width, height, "Help Path");
-
-        screen.write_str(y + 2, x + 2, "Path:", Color::Black, Color::LightGray);
-        screen.fill(y + 2, x + 9, width - 12, 1, ' ', Color::Black, Color::White);
-
-        // Draw the input text
-        let text = &state.help_path;
-        let max_len = (width - 13) as usize;
-        let display_text: String = text.chars().take(max_len).collect();
-        screen.write_str(y + 2, x + 9, &display_text, Color::Black, Color::White);
-
-        // Draw cursor
-        let cursor_x = x + 9 + state.dialog_input_cursor.min(max_len) as u16;
-        let cursor_char = text.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
-        screen.write_str(y + 2, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
-
-        Self::draw_button(screen, y + height - 2, x + 12, "OK", selected == 0);
-        Self::draw_button(screen, y + height - 2, x + 28, "Cancel", selected == 1);
-
-        let layout_item = LayoutItem::vstack(vec![
-            LayoutItem::leaf("title_bar").fixed_height(1),
-            LayoutItem::spacer().height(Size::Flex(1)),
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer().fixed_width(12),
-                LayoutItem::leaf("ok_button").fixed_width(8),
-                LayoutItem::spacer().fixed_width(8),
-                LayoutItem::leaf("cancel_button").fixed_width(11),
-                LayoutItem::spacer(),
-            ]).fixed_height(1),
-            LayoutItem::spacer().fixed_height(1),
-        ]);
-        let bounds = Rect::new(x, y, width, height);
-        state.dialog_layout = Some(compute_layout(&layout_item, bounds));
-    }
-
-    fn draw_display_options(screen: &mut Screen, state: &mut AppState, _screen_width: u16, _screen_height: u16, selected: usize) {
-        let x = state.dialog_x;
-        let y = state.dialog_y;
-        let width = state.dialog_width;
-        let height = state.dialog_height;
-
-        Self::draw_dialog_box_at(screen, x, y, width, height, "Display");
+        // Fields: 0=tabs, 1=scrollbars, 2=blue, 3=dark, 4=light, 5=OK, 6=Cancel
+        let current_field = state.dialog_input_field;
 
         // Tab Stops
-        screen.write_str(y + 2, x + 2, "Tab Stops:", Color::Black, Color::LightGray);
-        screen.fill(y + 2, x + 14, 5, 1, ' ', Color::Black, Color::White);
-        let tab_str = state.tab_stops.to_string();
-        screen.write_str(y + 2, x + 14, &tab_str, Color::Black, Color::White);
+        if let Some(rect) = layout.get("tabs_label") {
+            let (fg, bg) = if current_field == 0 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, "Tab Stops:", fg, bg);
+        }
+        if let Some(rect) = layout.get("tabs_field") {
+            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::White) };
+            screen.fill(rect.y, rect.x, rect.width, 1, ' ', fg, bg);
+            let tab_str = state.tab_stops.to_string();
+            screen.write_str(rect.y, rect.x, &tab_str, fg, bg);
 
-        // Show cursor on tab stops field if it's the active input field
-        if state.dialog_input_field == 0 {
-            let cursor_x = x + 14 + state.dialog_input_cursor.min(4) as u16;
-            let cursor_char = tab_str.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
-            screen.write_str(y + 2, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+            if current_field == 0 {
+                let cursor_x = rect.x + state.dialog_input_cursor.min(rect.width as usize - 1) as u16;
+                let cursor_char = tab_str.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
+                screen.write_str(rect.y, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
+            }
         }
 
         // Scroll Bars checkbox
-        let scroll_mark = if state.show_scrollbars { "X" } else { " " };
-        let (scroll_fg, scroll_bg) = if state.dialog_input_field == 1 {
-            (Color::White, Color::Black)
-        } else {
-            (Color::Black, Color::LightGray)
-        };
-        screen.write_str(y + 4, x + 2, &format!("[{}] Scroll Bars", scroll_mark), scroll_fg, scroll_bg);
-
-        // Color Scheme
-        screen.write_str(y + 6, x + 2, "Color Scheme:", Color::Black, Color::LightGray);
-        let schemes = ["Classic Blue", "Dark", "Light"];
-        for (i, scheme) in schemes.iter().enumerate() {
-            let mark = if state.color_scheme == i { "o" } else { " " };
-            let (fg, bg) = if state.dialog_input_field == 2 + i {
-                (Color::White, Color::Black)
-            } else {
-                (Color::Black, Color::LightGray)
-            };
-            screen.write_str(y + 7 + i as u16, x + 4, &format!("({}) {}", mark, scheme), fg, bg);
+        if let Some(rect) = layout.get("scrollbars_checkbox") {
+            let mark = if state.show_scrollbars { "X" } else { " " };
+            let (fg, bg) = if current_field == 1 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, &format!("[{}] Scroll Bars", mark), fg, bg);
         }
 
-        Self::draw_button(screen, y + height - 2, x + 12, "OK", selected == 0);
-        Self::draw_button(screen, y + height - 2, x + 28, "Cancel", selected == 1);
+        // Color Scheme label
+        if let Some(rect) = layout.get("scheme_label") {
+            screen.write_str(rect.y, rect.x, "Color Scheme:", Color::Black, Color::LightGray);
+        }
 
-        let layout_item = LayoutItem::vstack(vec![
-            LayoutItem::leaf("title_bar").fixed_height(1),
-            LayoutItem::spacer().height(Size::Flex(1)),
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer().fixed_width(12),
-                LayoutItem::leaf("ok_button").fixed_width(8),
-                LayoutItem::spacer().fixed_width(8),
-                LayoutItem::leaf("cancel_button").fixed_width(11),
-                LayoutItem::spacer(),
-            ]).fixed_height(1),
-            LayoutItem::spacer().fixed_height(1),
-        ]);
-        let bounds = Rect::new(x, y, width, height);
-        state.dialog_layout = Some(compute_layout(&layout_item, bounds));
+        // Color scheme radio buttons
+        if let Some(rect) = layout.get("scheme_blue") {
+            let mark = if state.color_scheme == 0 { "o" } else { " " };
+            let (fg, bg) = if current_field == 2 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, &format!("  ({}) Classic Blue", mark), fg, bg);
+        }
+        if let Some(rect) = layout.get("scheme_dark") {
+            let mark = if state.color_scheme == 1 { "o" } else { " " };
+            let (fg, bg) = if current_field == 3 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, &format!("  ({}) Dark", mark), fg, bg);
+        }
+        if let Some(rect) = layout.get("scheme_light") {
+            let mark = if state.color_scheme == 2 { "o" } else { " " };
+            let (fg, bg) = if current_field == 4 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
+            screen.write_str(rect.y, rect.x, &format!("  ({}) Light", mark), fg, bg);
+        }
+
+        // Buttons
+        if let Some(rect) = layout.get("ok_button") {
+            Self::draw_button(screen, rect.y, rect.x, "OK", current_field == 5);
+        }
+        if let Some(rect) = layout.get("cancel_button") {
+            Self::draw_button(screen, rect.y, rect.x, "Cancel", current_field == 6);
+        }
+
+        // Cache layout for hit testing
+        state.dialog_layout = Some(layout);
     }
 }
 

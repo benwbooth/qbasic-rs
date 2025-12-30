@@ -28,6 +28,7 @@ impl StatusBar {
             match state.run_state {
                 RunState::Editing => String::new(),
                 RunState::Running => " Running... ".to_string(),
+                RunState::WaitingForInput => " Running... ".to_string(),
                 RunState::Paused => " Paused ".to_string(),
                 RunState::Stepping => " Step ".to_string(),
                 RunState::Finished => " Finished ".to_string(),
@@ -53,6 +54,7 @@ impl StatusBar {
     }
 
     /// Draw the function key bar (optional, at very bottom)
+    #[allow(dead_code)]
     pub fn draw_key_bar(screen: &mut Screen, row: u16, width: u16) {
         // Background
         screen.fill(row, 1, width, 1, ' ', Color::Black, Color::LightGray);

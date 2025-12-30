@@ -33,6 +33,7 @@ impl MenuItem {
         }
     }
 
+    #[allow(dead_code)]
     pub fn disabled(mut self) -> Self {
         self.enabled = false;
         self

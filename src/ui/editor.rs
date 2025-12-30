@@ -50,7 +50,7 @@ pub fn format_basic_line(line: &str) -> String {
     }
 
     let mut result = String::new();
-    let mut chars: Vec<char> = line.chars().collect();
+    let chars: Vec<char> = line.chars().collect();
     let mut i = 0;
     let mut in_string = false;
     let mut in_comment = false;
@@ -304,6 +304,8 @@ pub struct Editor {
     pub keyboard_select_mode: bool,  // True when Ctrl+Space activated selection mode
     pub undo_stack: Vec<UndoAction>,
     pub redo_stack: Vec<UndoAction>,
+    pub visible_lines: usize,  // Number of visible lines (for PageUp/PageDown)
+    pub visible_cols: usize,   // Number of visible columns
 }
 
 impl Editor {
@@ -320,6 +322,8 @@ impl Editor {
             keyboard_select_mode: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            visible_lines: 20,  // Default, updated in draw()
+            visible_cols: 80,   // Default, updated in draw()
         }
     }
 
@@ -1136,7 +1140,7 @@ impl Editor {
     }
 
     /// Draw the editor
-    pub fn draw(&self, screen: &mut Screen, state: &AppState, bounds: Rect) {
+    pub fn draw(&mut self, screen: &mut Screen, state: &AppState, bounds: Rect) {
         let row = bounds.y + 1; // Convert 0-based to 1-based
         let col = bounds.x + 1;
         let width = bounds.width;
@@ -1157,6 +1161,10 @@ impl Editor {
         let content_col = col + 1;
         let content_width = width.saturating_sub(2);
         let content_height = height.saturating_sub(2);
+
+        // Update visible dimensions (minus 1 for scrollbars)
+        self.visible_lines = content_height.saturating_sub(1) as usize;
+        self.visible_cols = content_width.saturating_sub(1) as usize;
 
         // Draw lines
         for r in 0..content_height as usize {
@@ -1657,25 +1665,32 @@ impl Editor {
                 true
             }
             InputEvent::PageUp => {
+                let page_size = self.visible_lines.max(1);
                 if self.keyboard_select_mode {
-                    self.cursor_line = self.cursor_line.saturating_sub(20);
+                    self.cursor_line = self.cursor_line.saturating_sub(page_size);
+                    self.scroll_row = self.scroll_row.saturating_sub(page_size);
                     self.clamp_cursor();
                     self.selection_end = Some((self.cursor_line, self.cursor_col));
                 } else {
                     self.clear_selection();
-                    self.cursor_line = self.cursor_line.saturating_sub(20);
+                    self.cursor_line = self.cursor_line.saturating_sub(page_size);
+                    self.scroll_row = self.scroll_row.saturating_sub(page_size);
                     self.clamp_cursor();
                 }
                 true
             }
             InputEvent::PageDown => {
+                let page_size = self.visible_lines.max(1);
+                let max_line = self.buffer.line_count().saturating_sub(1);
                 if self.keyboard_select_mode {
-                    self.cursor_line = (self.cursor_line + 20).min(self.buffer.line_count().saturating_sub(1));
+                    self.cursor_line = (self.cursor_line + page_size).min(max_line);
+                    self.scroll_row = (self.scroll_row + page_size).min(max_line);
                     self.clamp_cursor();
                     self.selection_end = Some((self.cursor_line, self.cursor_col));
                 } else {
                     self.clear_selection();
-                    self.cursor_line = (self.cursor_line + 20).min(self.buffer.line_count().saturating_sub(1));
+                    self.cursor_line = (self.cursor_line + page_size).min(max_line);
+                    self.scroll_row = (self.scroll_row + page_size).min(max_line);
                     self.clamp_cursor();
                 }
                 true
@@ -1951,12 +1966,13 @@ impl Editor {
         }
     }
 
-    fn clamp_cursor(&mut self) {
+    pub fn clamp_cursor(&mut self) {
         let line_len = self.buffer.line(self.cursor_line).map(|l| l.len()).unwrap_or(0);
         self.cursor_col = self.cursor_col.min(line_len);
     }
 
     /// Adjust scroll position to keep cursor visible
+    #[allow(dead_code)]
     pub fn ensure_cursor_visible(&mut self, visible_lines: usize, visible_cols: usize) {
         // Vertical scrolling
         if self.cursor_line < self.scroll_row {

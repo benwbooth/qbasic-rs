@@ -4,6 +4,7 @@ use crate::terminal::{Key, MouseEvent, MouseButton};
 
 /// Processed input events for the application
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum InputEvent {
     /// Mouse click
     MouseClick { row: u16, col: u16 },
@@ -11,6 +12,8 @@ pub enum InputEvent {
     MouseRelease { row: u16, col: u16 },
     /// Mouse drag (move while button held)
     MouseDrag { row: u16, col: u16 },
+    /// Mouse move (no button pressed)
+    MouseMove { row: u16, col: u16 },
     /// Mouse wheel scroll
     ScrollUp { row: u16, col: u16 },
     ScrollDown { row: u16, col: u16 },
@@ -196,6 +199,9 @@ impl From<Key> for InputEvent {
             }
             Key::Mouse(MouseEvent { button: MouseButton::WheelDown, row, col, .. }) => {
                 InputEvent::ScrollDown { row, col }
+            }
+            Key::Mouse(MouseEvent { button: MouseButton::None, row, col, motion: true, .. }) => {
+                InputEvent::MouseMove { row, col }
             }
             Key::Mouse(_) => InputEvent::Unknown, // Ignore other mouse events
             Key::Unknown(bytes) => InputEvent::UnknownBytes(bytes),

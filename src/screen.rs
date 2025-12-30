@@ -91,6 +91,7 @@ impl Screen {
     }
 
     /// Get a cell from the back buffer
+    #[allow(dead_code)]
     pub fn get(&self, row: u16, col: u16) -> Option<Cell> {
         self.index(row, col).map(|idx| self.back[idx])
     }
@@ -117,6 +118,7 @@ impl Screen {
     }
 
     /// Clear the entire back buffer with default cell
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         let default_cell = Cell::default();
         self.back.fill(default_cell);
@@ -161,6 +163,7 @@ impl Screen {
     }
 
     /// Draw a double-line box (for dialogs)
+    #[allow(dead_code)]
     pub fn draw_double_box(&mut self, row: u16, col: u16, width: u16, height: u16, fg: Color, bg: Color) {
         if width < 2 || height < 2 {
             return;
@@ -223,6 +226,7 @@ impl Screen {
     }
 
     /// Get cursor position
+    #[allow(dead_code)]
     pub fn cursor(&self) -> (u16, u16) {
         (self.cursor_row, self.cursor_col)
     }
@@ -235,6 +239,41 @@ impl Screen {
     /// Set cursor style
     pub fn set_cursor_style(&mut self, style: CursorStyle) {
         self.cursor_style = style;
+    }
+
+    /// Apply mouse cursor effect at given position (orange background, inverted foreground)
+    pub fn apply_mouse_cursor(&mut self, row: u16, col: u16) {
+        if row == 0 || col == 0 {
+            return; // Invalid position
+        }
+        if let Some(idx) = self.index(row, col) {
+            let cell = self.back[idx];
+            // Invert the foreground color and use orange/brown background
+            let inverted_fg = Self::invert_color(cell.fg);
+            self.back[idx] = Cell::new(cell.ch, inverted_fg, Color::Brown);
+        }
+    }
+
+    /// Invert a color for cursor effect
+    fn invert_color(color: Color) -> Color {
+        match color {
+            Color::Black => Color::White,
+            Color::White => Color::Black,
+            Color::Blue => Color::Yellow,
+            Color::Yellow => Color::Blue,
+            Color::Green => Color::LightMagenta,
+            Color::LightMagenta => Color::Green,
+            Color::Cyan => Color::LightRed,
+            Color::LightRed => Color::Cyan,
+            Color::Red => Color::LightCyan,
+            Color::LightCyan => Color::Red,
+            Color::Magenta => Color::LightGreen,
+            Color::LightGreen => Color::Magenta,
+            Color::Brown => Color::LightBlue,
+            Color::LightBlue => Color::Brown,
+            Color::LightGray => Color::DarkGray,
+            Color::DarkGray => Color::LightGray,
+        }
     }
 
     /// Flush changes to the terminal (only updates changed cells)
@@ -301,6 +340,7 @@ impl Screen {
 }
 
 /// Horizontal line drawing
+#[allow(dead_code)]
 pub fn hline(screen: &mut Screen, row: u16, col: u16, len: u16, ch: char, fg: Color, bg: Color) {
     for c in 0..len {
         screen.set(row, col + c, ch, fg, bg);
@@ -308,6 +348,7 @@ pub fn hline(screen: &mut Screen, row: u16, col: u16, len: u16, ch: char, fg: Co
 }
 
 /// Vertical line drawing
+#[allow(dead_code)]
 pub fn vline(screen: &mut Screen, row: u16, col: u16, len: u16, ch: char, fg: Color, bg: Color) {
     for r in 0..len {
         screen.set(row + r, col, ch, fg, bg);

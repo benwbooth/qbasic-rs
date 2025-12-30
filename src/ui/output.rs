@@ -3,6 +3,7 @@
 use crate::screen::Screen;
 use crate::terminal::Color;
 use crate::state::AppState;
+use crate::basic::graphics::GraphicsMode;
 use super::layout::Rect;
 
 /// The output window for program execution (black background, white text)
@@ -25,6 +26,7 @@ impl OutputWindow {
     }
 
     /// Draw the output window in a bordered panel
+    #[allow(dead_code)]
     pub fn draw(&self, screen: &mut Screen, state: &AppState, bounds: Rect) {
         let row = bounds.y + 1; // 1-based row
         let col = bounds.x + 1;
@@ -127,6 +129,36 @@ impl OutputWindow {
         screen.set_cursor_visible(false);
     }
 
+    /// Draw the graphics text screen fullscreen
+    pub fn draw_graphics_screen(&self, screen: &mut Screen, graphics: &GraphicsMode, state: &AppState) {
+        let (term_width, term_height) = screen.size();
+
+        // Render each cell of the graphics text screen
+        // The buffer should be sized to match the terminal, so this covers everything
+        for row in 1..=term_height {
+            for col in 1..=term_width {
+                if row <= graphics.text_rows && col <= graphics.text_cols {
+                    let cell = graphics.get_char(row, col);
+                    let fg = dos_to_color(cell.fg);
+                    let bg = dos_to_color(cell.bg);
+                    screen.set(row, col, cell.char, fg, bg);
+                } else {
+                    // Fill any extra space with black
+                    screen.set(row, col, ' ', Color::LightGray, Color::Black);
+                }
+            }
+        }
+
+        // Show status at bottom if program completed
+        if state.run_state == crate::state::RunState::Finished {
+            let msg = " Press any key to continue ";
+            let msg_x = (term_width.saturating_sub(msg.len() as u16)) / 2 + 1;
+            screen.write_str(term_height, msg_x, msg, Color::Black, Color::White);
+        }
+
+        screen.set_cursor_visible(false);
+    }
+
     /// Add output line
     pub fn add_output(&mut self, line: &str) {
         self.output.push(line.to_string());
@@ -144,12 +176,14 @@ impl OutputWindow {
     }
 
     /// Scroll up
+    #[allow(dead_code)]
     pub fn scroll_up(&mut self, lines: usize) {
         let max_scroll = self.output.len().saturating_sub(10); // Leave at least 10 lines visible
         self.scroll = (self.scroll + lines).min(max_scroll);
     }
 
     /// Scroll down
+    #[allow(dead_code)]
     pub fn scroll_down(&mut self, lines: usize) {
         self.scroll = self.scroll.saturating_sub(lines);
     }
@@ -158,5 +192,28 @@ impl OutputWindow {
 impl Default for OutputWindow {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Convert DOS color (0-15) to terminal color
+fn dos_to_color(color: u8) -> Color {
+    match color & 0x0F {
+        0 => Color::Black,
+        1 => Color::Blue,
+        2 => Color::Green,
+        3 => Color::Cyan,
+        4 => Color::Red,
+        5 => Color::Magenta,
+        6 => Color::Brown,
+        7 => Color::LightGray,
+        8 => Color::DarkGray,
+        9 => Color::LightBlue,
+        10 => Color::LightGreen,
+        11 => Color::LightCyan,
+        12 => Color::LightRed,
+        13 => Color::LightMagenta,
+        14 => Color::Yellow,
+        15 => Color::White,
+        _ => Color::White,
     }
 }

@@ -104,6 +104,7 @@ pub enum MouseButton {
     Right,
     WheelUp,
     WheelDown,
+    None, // No button pressed (for motion-only events)
 }
 
 /// Mouse event
@@ -198,7 +199,7 @@ impl Terminal {
 
         // Setup terminal
         term.write_raw("\x1b[?25l")?; // Hide cursor
-        term.write_raw("\x1b[?1002h")?; // Enable button-event mouse tracking (includes drag)
+        term.write_raw("\x1b[?1003h")?; // Enable any-event mouse tracking (motion without buttons)
         term.write_raw("\x1b[?1006h")?; // Enable SGR extended mouse mode
         term.write_raw("\x1b[>4;2m")?; // Enable modifyOtherKeys mode 2 (xterm)
         term.write_raw("\x1b[>1u")?; // Enable Kitty keyboard protocol
@@ -244,8 +245,9 @@ impl Terminal {
             termios.c_cflag |= libc::CS8;
 
             // Set minimum chars and timeout for read
+            // VMIN=0, VTIME=0 means non-blocking read
             termios.c_cc[libc::VMIN] = 0;
-            termios.c_cc[libc::VTIME] = 1; // 100ms timeout
+            termios.c_cc[libc::VTIME] = 0;
 
             if libc::tcsetattr(fd, libc::TCSAFLUSH, &termios) != 0 {
                 return Err(io::Error::last_os_error());
@@ -301,6 +303,7 @@ impl Terminal {
     }
 
     /// Clear to end of line
+    #[allow(dead_code)]
     pub fn clear_eol(&mut self) -> io::Result<()> {
         self.write_raw("\x1b[K")
     }
@@ -329,6 +332,7 @@ impl Terminal {
     }
 
     /// Read a key from input (non-blocking)
+    #[allow(dead_code)]
     pub fn read_key(&self) -> io::Result<Option<Key>> {
         let (key, _bytes) = self.read_key_raw()?;
         Ok(key)
@@ -432,7 +436,6 @@ impl Terminal {
 
             // Ctrl+Backspace and Ctrl+Delete
             [0x1f] => Key::CtrlBackspace,  // Ctrl+Backspace sends 0x1f
-            [0x08] => Key::CtrlBackspace,  // Some terminals send 0x08
             [0x1b, b'[', b'3', b';', b'5', b'~'] => Key::CtrlDelete,
 
             // Ctrl+Shift+Arrow keys (modifier 6 = ctrl+shift)
@@ -498,7 +501,7 @@ impl Terminal {
             0 => MouseButton::Left,
             1 => MouseButton::Middle,
             2 => MouseButton::Right,
-            3 => return None, // Release (handled by 'm' suffix)
+            3 => MouseButton::None, // No button (motion without press)
             _ => return None,
         };
 
@@ -526,6 +529,7 @@ impl Terminal {
     }
 
     /// Write a string at current position
+    #[allow(dead_code)]
     pub fn write_str(&mut self, s: &str) -> io::Result<()> {
         self.stdout.write_all(s.as_bytes())?;
         Ok(())
@@ -538,6 +542,7 @@ impl Terminal {
     }
 
     /// Draw a box with single-line border
+    #[allow(dead_code)]
     pub fn draw_box(&mut self, row: u16, col: u16, width: u16, height: u16, fg: Color, bg: Color) -> io::Result<()> {
         self.set_colors(fg, bg)?;
 
@@ -571,6 +576,7 @@ impl Terminal {
     }
 
     /// Draw a double-line box (for dialogs)
+    #[allow(dead_code)]
     pub fn draw_double_box(&mut self, row: u16, col: u16, width: u16, height: u16, fg: Color, bg: Color) -> io::Result<()> {
         self.set_colors(fg, bg)?;
 
@@ -604,6 +610,7 @@ impl Terminal {
     }
 
     /// Fill a rectangular area with a character
+    #[allow(dead_code)]
     pub fn fill_rect(&mut self, row: u16, col: u16, width: u16, height: u16, c: char, fg: Color, bg: Color) -> io::Result<()> {
         self.set_colors(fg, bg)?;
         for r in 0..height {
@@ -616,6 +623,7 @@ impl Terminal {
     }
 
     /// Draw shadow effect (right and bottom edges)
+    #[allow(dead_code)]
     pub fn draw_shadow(&mut self, row: u16, col: u16, width: u16, height: u16) -> io::Result<()> {
         self.set_colors(Color::Black, Color::Black)?;
 
@@ -642,7 +650,7 @@ impl Drop for Terminal {
         let _ = self.write_raw("\x1b[>4;0m"); // Disable modifyOtherKeys
         // Disable mouse tracking
         let _ = self.write_raw("\x1b[?1006l");
-        let _ = self.write_raw("\x1b[?1002l");
+        let _ = self.write_raw("\x1b[?1003l");
         // Restore terminal state
         let _ = self.write_raw("\x1b[0 q"); // Reset cursor to terminal default
         let _ = self.show_cursor();
@@ -655,6 +663,7 @@ impl Drop for Terminal {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub enum CursorStyle {
     BlinkingBlock,
     SteadyBlock,

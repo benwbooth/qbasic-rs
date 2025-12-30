@@ -22,6 +22,7 @@ impl Rect {
 
 /// Size constraint for layout items
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub enum Size {
     /// Fixed size in characters
     Fixed(u16),
@@ -401,6 +402,7 @@ pub fn file_dialog_layout() -> LayoutItem {
 }
 
 /// Create a simple message dialog layout
+#[allow(dead_code)]
 pub fn message_dialog_layout() -> LayoutItem {
     LayoutItem::vstack(vec![
         // Title bar
@@ -472,6 +474,7 @@ pub fn main_screen_layout(
 }
 
 /// Create the menu bar layout with dynamic menu titles
+#[allow(dead_code)]
 pub fn menu_bar_layout(menu_titles: &[&str]) -> LayoutItem {
     let mut children: Vec<LayoutItem> = Vec::new();
 
@@ -494,6 +497,7 @@ pub fn menu_bar_layout(menu_titles: &[&str]) -> LayoutItem {
 /// - title_bar: Fixed height 1 at top
 /// - content_row: HStack of content (flex) + vscroll (fixed 1)
 /// - hscroll_row: HStack of hscroll (flex) + corner (fixed 1)
+#[allow(dead_code)]
 pub fn editor_layout() -> LayoutItem {
     LayoutItem::vstack(vec![
         // Title bar
@@ -517,6 +521,7 @@ pub fn editor_layout() -> LayoutItem {
 /// - up_arrow: Fixed 1
 /// - track: Flex
 /// - down_arrow: Fixed 1
+#[allow(dead_code)]
 pub fn vertical_scrollbar_layout(height: u16) -> LayoutItem {
     LayoutItem::vstack(vec![
         LayoutItem::leaf("up_arrow").fixed_height(1),
@@ -529,6 +534,7 @@ pub fn vertical_scrollbar_layout(height: u16) -> LayoutItem {
 /// - left_arrow: Fixed 1
 /// - track: Flex
 /// - right_arrow: Fixed 1
+#[allow(dead_code)]
 pub fn horizontal_scrollbar_layout(width: u16) -> LayoutItem {
     LayoutItem::hstack(vec![
         LayoutItem::leaf("left_arrow").fixed_width(1),
@@ -542,6 +548,7 @@ pub fn horizontal_scrollbar_layout(width: u16) -> LayoutItem {
 /// - status_message: Flex (takes remaining)
 /// - position: Fixed width for line:col
 /// - mode: Fixed width for INS/OVR
+#[allow(dead_code)]
 pub fn status_bar_layout(width: u16) -> LayoutItem {
     LayoutItem::hstack(vec![
         LayoutItem::leaf("help_hint").fixed_width(49), // "<F1=Help> <F5=Run> <F10=Menu>"
@@ -555,6 +562,7 @@ pub fn status_bar_layout(width: u16) -> LayoutItem {
 /// - title_bar: Fixed 1
 /// - output: Flex
 /// - input_row: Fixed 1 (prompt + input field)
+#[allow(dead_code)]
 pub fn immediate_window_layout() -> LayoutItem {
     LayoutItem::vstack(vec![
         LayoutItem::leaf("title_bar").fixed_height(1),
@@ -569,25 +577,6 @@ pub fn immediate_window_layout() -> LayoutItem {
 // ============================================================================
 // Dialog Layouts
 // ============================================================================
-
-/// About dialog layout
-pub fn about_dialog_layout() -> LayoutItem {
-    LayoutItem::vstack(vec![
-        // Title bar
-        LayoutItem::leaf("title_bar").fixed_height(1),
-
-        // Content area (padding 1)
-        LayoutItem::vstack(vec![
-            LayoutItem::leaf("content").height(Size::Flex(1)),
-            LayoutItem::spacer().fixed_height(1),
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer(),
-                LayoutItem::leaf("ok_button").fixed_width(8),
-                LayoutItem::spacer(),
-            ]).fixed_height(1),
-        ]).height(Size::Flex(1)).padding(1),
-    ])
-}
 
 /// Find dialog layout
 pub fn find_dialog_layout() -> LayoutItem {
@@ -706,23 +695,23 @@ pub fn welcome_dialog_layout() -> LayoutItem {
         // Content area (padding 1)
         LayoutItem::vstack(vec![
             LayoutItem::spacer().fixed_height(1),
-            LayoutItem::leaf("welcome_text").height(Size::Flex(1)),
+            LayoutItem::leaf("welcome_text").fixed_height(1),
             LayoutItem::spacer().fixed_height(1),
+            LayoutItem::leaf("copyright").fixed_height(1),
+            LayoutItem::spacer().fixed_height(2),
 
-            // Buttons row
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer(),
-                LayoutItem::leaf("start_button").fixed_width(18),
-                LayoutItem::leaf("exit_button").fixed_width(18),
-                LayoutItem::spacer(),
-            ]).fixed_height(1).spacing(2),
-
+            // Options on separate lines (vertically stacked)
+            LayoutItem::leaf("start_button").fixed_height(1),
             LayoutItem::spacer().fixed_height(1),
+            LayoutItem::leaf("exit_button").fixed_height(1),
+
+            LayoutItem::spacer().height(Size::Flex(1)),
         ]).height(Size::Flex(1)).padding(1),
     ])
 }
 
 /// Help dialog layout
+#[allow(dead_code)]
 pub fn help_dialog_layout() -> LayoutItem {
     LayoutItem::vstack(vec![
         // Title bar
@@ -744,6 +733,7 @@ pub fn help_dialog_layout() -> LayoutItem {
 }
 
 /// New Program confirmation dialog layout
+#[allow(dead_code)]
 pub fn new_program_dialog_layout() -> LayoutItem {
     LayoutItem::vstack(vec![
         // Title bar
@@ -803,6 +793,7 @@ pub fn print_dialog_layout() -> LayoutItem {
 }
 
 /// Confirm dialog layout (generic Yes/No/Cancel)
+#[allow(dead_code)]
 pub fn confirm_dialog_layout() -> LayoutItem {
     LayoutItem::vstack(vec![
         // Title bar
@@ -826,11 +817,82 @@ pub fn confirm_dialog_layout() -> LayoutItem {
     ])
 }
 
+/// Simple input dialog layout (NewSub, NewFunction, FindLabel, CommandArgs, HelpPath)
+pub fn simple_input_dialog_layout() -> LayoutItem {
+    LayoutItem::vstack(vec![
+        // Title bar
+        LayoutItem::leaf("title_bar").fixed_height(1),
+
+        // Content area (padding 1)
+        LayoutItem::vstack(vec![
+            // Input row
+            LayoutItem::hstack(vec![
+                LayoutItem::leaf("input_label").fixed_width(12),
+                LayoutItem::leaf("input_field").width(Size::Flex(1)),
+            ]).fixed_height(1),
+
+            LayoutItem::spacer().fixed_height(1),
+
+            // Buttons row
+            LayoutItem::hstack(vec![
+                LayoutItem::spacer(),
+                LayoutItem::leaf("ok_button").fixed_width(8),
+                LayoutItem::leaf("cancel_button").fixed_width(10),
+                LayoutItem::spacer(),
+            ]).fixed_height(1).spacing(2),
+        ]).height(Size::Flex(1)).padding(1),
+    ])
+}
+
+/// Display options dialog layout
+pub fn display_options_dialog_layout() -> LayoutItem {
+    LayoutItem::vstack(vec![
+        // Title bar
+        LayoutItem::leaf("title_bar").fixed_height(1),
+
+        // Content area (padding 1)
+        LayoutItem::vstack(vec![
+            // Tab stops row
+            LayoutItem::hstack(vec![
+                LayoutItem::leaf("tabs_label").fixed_width(12),
+                LayoutItem::leaf("tabs_field").fixed_width(6),
+                LayoutItem::spacer(),
+            ]).fixed_height(1),
+
+            LayoutItem::spacer().fixed_height(1),
+
+            // Scrollbars checkbox
+            LayoutItem::leaf("scrollbars_checkbox").fixed_height(1),
+
+            LayoutItem::spacer().fixed_height(1),
+
+            // Color scheme label
+            LayoutItem::leaf("scheme_label").fixed_height(1),
+
+            // Color scheme options
+            LayoutItem::leaf("scheme_blue").fixed_height(1),
+            LayoutItem::leaf("scheme_dark").fixed_height(1),
+            LayoutItem::leaf("scheme_light").fixed_height(1),
+
+            LayoutItem::spacer().height(Size::Flex(1)),
+
+            // Buttons row
+            LayoutItem::hstack(vec![
+                LayoutItem::spacer(),
+                LayoutItem::leaf("ok_button").fixed_width(8),
+                LayoutItem::leaf("cancel_button").fixed_width(10),
+                LayoutItem::spacer(),
+            ]).fixed_height(1).spacing(2),
+        ]).height(Size::Flex(1)).padding(1),
+    ])
+}
+
 // ============================================================================
 // Menu Dropdown Layout
 // ============================================================================
 
 /// Create menu dropdown layout based on items
+#[allow(dead_code)]
 pub fn menu_dropdown_layout(items: &[&str]) -> LayoutItem {
     let children: Vec<LayoutItem> = items.iter().enumerate().map(|(i, item)| {
         if *item == "-" {

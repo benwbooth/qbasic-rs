@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::{self, Write};
-use crate::basic::parser::{Stmt, Expr, BinOp, UnaryOp, PrintItem, DimVar};
+use crate::basic::parser::{Stmt, Expr, BinOp, UnaryOp, PrintItem};
 use crate::basic::builtins;
 use crate::basic::graphics::GraphicsMode;
 
@@ -43,15 +43,6 @@ impl Value {
         }
     }
 
-    pub fn to_bool(&self) -> bool {
-        match self {
-            Value::Integer(n) => *n != 0,
-            Value::Float(n) => *n != 0.0,
-            Value::String(s) => !s.is_empty(),
-            Value::Array(_, _) => true,
-        }
-    }
-
     pub fn is_true(&self) -> bool {
         self.to_int() != 0
     }
@@ -72,10 +63,13 @@ pub enum ExecutionResult {
     Breakpoint(usize),
     /// In step mode, stopped after one statement at line
     Stepped(usize),
+    /// Needs keyboard input (for INKEY$) - yields to allow UI update
+    NeedsInput,
 }
 
 /// A procedure (SUB or FUNCTION) definition
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct Procedure {
     pub name: String,
     pub params: Vec<String>,
@@ -130,6 +124,15 @@ pub struct Interpreter {
 
     /// Call stack for local variable scopes
     call_stack: Vec<HashMap<String, Value>>,
+
+    /// Pending key for INKEY$
+    pub pending_key: Option<String>,
+
+    /// Flag set when INKEY$ was called and returned empty - signals need to yield
+    pub needs_input: bool,
+
+    /// Last time we yielded for display update (in milliseconds since epoch)
+    last_yield_time: u128,
 }
 
 impl Interpreter {
@@ -151,7 +154,17 @@ impl Interpreter {
             line_mapping: Vec::new(),
             procedures: HashMap::new(),
             call_stack: Vec::new(),
+            pending_key: None,
+            needs_input: false,
+            last_yield_time: 0,
         }
+    }
+
+    fn current_time_millis() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
     }
 
     /// Set breakpoints (0-indexed line numbers)
@@ -165,23 +178,6 @@ impl Interpreter {
     /// Enable or disable step mode
     pub fn set_step_mode(&mut self, enabled: bool) {
         self.step_mode = enabled;
-    }
-
-    /// Get current execution line
-    pub fn current_line(&self) -> Option<usize> {
-        if self.current_pos > 0 && self.current_pos <= self.line_mapping.len() {
-            Some(self.line_mapping[self.current_pos - 1])
-        } else {
-            None
-        }
-    }
-
-    /// Set input handler
-    pub fn set_input_handler<F>(&mut self, f: F)
-    where
-        F: Fn(&str) -> String + 'static,
-    {
-        self.input_fn = Some(Box::new(f));
     }
 
     /// Get output buffer
@@ -229,6 +225,13 @@ impl Interpreter {
         self.line_mapping.clear();
         self.procedures.clear();
         self.call_stack.clear();
+        self.pending_key = None;
+        self.needs_input = false;
+        self.last_yield_time = 0;
+        // Reset graphics to default text mode (white on black)
+        self.graphics = GraphicsMode::new(80, 25);
+        self.graphics.set_color(7, 0);  // Light gray on black
+        self.graphics.cls();
     }
 
     /// Build line mapping from statement index to source line
@@ -247,6 +250,7 @@ impl Interpreter {
             ExecutionResult::Completed => Ok(()),
             ExecutionResult::Breakpoint(_) => Ok(()), // Treat as completed for non-debug mode
             ExecutionResult::Stepped(_) => Ok(()),
+            ExecutionResult::NeedsInput => Ok(()), // Treat as completed for non-debug mode
         }
     }
 
@@ -296,6 +300,11 @@ impl Interpreter {
                 Err(e) => return Err(e),
             }
 
+            // Check if we need to yield for keyboard input
+            if self.needs_input {
+                return Ok(ExecutionResult::NeedsInput);
+            }
+
             // Check for step mode
             if self.step_mode {
                 let new_line = if self.current_pos < self.line_mapping.len() {
@@ -333,6 +342,11 @@ impl Interpreter {
                 }
                 Ok(None) => {}
                 Err(e) => return Err(e),
+            }
+
+            // Check if we need to yield for keyboard input
+            if self.needs_input {
+                return Ok(ExecutionResult::NeedsInput);
             }
 
             // Check for step mode
@@ -396,7 +410,6 @@ impl Interpreter {
 
             Stmt::Print(items) => {
                 let mut output = String::new();
-                let mut col = 0;
 
                 for item in items {
                     match item {
@@ -404,13 +417,12 @@ impl Interpreter {
                             let val = self.eval_expr(expr)?;
                             let s = val.to_string();
                             output.push_str(&s);
-                            col += s.len();
                         }
                         PrintItem::Tab(expr) => {
                             let tab_col = self.eval_expr(expr)?.to_int() as usize;
-                            while col < tab_col {
+                            let current_col = self.graphics.cursor_col as usize;
+                            while output.len() + current_col < tab_col {
                                 output.push(' ');
-                                col += 1;
                             }
                         }
                         PrintItem::Spc(expr) => {
@@ -418,14 +430,13 @@ impl Interpreter {
                             for _ in 0..spaces {
                                 output.push(' ');
                             }
-                            col += spaces;
                         }
                         PrintItem::Comma => {
                             // Tab to next 14-column zone
-                            let next_zone = ((col / 14) + 1) * 14;
-                            while col < next_zone {
+                            let current_col = self.graphics.cursor_col as usize + output.len();
+                            let next_zone = ((current_col / 14) + 1) * 14;
+                            while output.len() + self.graphics.cursor_col as usize - 1 < next_zone {
                                 output.push(' ');
-                                col += 1;
                             }
                         }
                         PrintItem::Semicolon => {
@@ -434,16 +445,13 @@ impl Interpreter {
                     }
                 }
 
-                // Add newline unless ended with semicolon
+                // Print to text screen
                 let no_newline = items.last().map(|i| matches!(i, PrintItem::Semicolon)).unwrap_or(false);
+                self.graphics.print_text(&output, !no_newline);
+
+                // Also add to output buffer for debugging
                 if !no_newline {
                     self.output_buffer.push(output);
-                } else {
-                    if let Some(last) = self.output_buffer.last_mut() {
-                        last.push_str(&output);
-                    } else {
-                        self.output_buffer.push(output);
-                    }
                 }
                 Ok(None)
             }
@@ -842,6 +850,39 @@ impl Interpreter {
             Expr::String(s) => Ok(Value::String(s.clone())),
 
             Expr::Variable(name) => {
+                let name_upper = name.to_uppercase();
+                let name_base = name_upper.trim_end_matches('$');
+
+                // Check for parameter-less builtin functions
+                match name_base {
+                    "RND" => return Ok(Value::Float(self.rnd())),
+                    "TIMER" => {
+                        use std::time::{SystemTime, UNIX_EPOCH};
+                        let secs = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_secs_f64() % 86400.0)
+                            .unwrap_or(0.0);
+                        return Ok(Value::Float(secs));
+                    }
+                    "INKEY" => {
+                        // Non-blocking key check - return pending key or empty string
+                        if let Some(key) = self.pending_key.take() {
+                            self.needs_input = false;
+                            return Ok(Value::String(key));
+                        } else {
+                            // No key available - yield for display update if enough time passed
+                            // Yield every ~16ms (~60fps) to keep display responsive
+                            let now = Self::current_time_millis();
+                            if now - self.last_yield_time >= 16 {
+                                self.last_yield_time = now;
+                                self.needs_input = true;
+                            }
+                            return Ok(Value::String(String::new()));
+                        }
+                    }
+                    _ => {}
+                }
+
                 Ok(self.get_variable(name).unwrap_or_else(|| {
                     if name.to_uppercase().ends_with('$') {
                         Value::String(String::new())
@@ -979,15 +1020,6 @@ impl Interpreter {
         (self.rng_state >> 33) as f64 / (1u64 << 31) as f64
     }
 
-    /// Get a variable value
-    pub fn get_var(&self, name: &str) -> Option<&Value> {
-        self.variables.get(&name.to_uppercase())
-    }
-
-    /// Set a variable value
-    pub fn set_var(&mut self, name: &str, value: Value) {
-        self.variables.insert(name.to_uppercase(), value);
-    }
 }
 
 impl Default for Interpreter {

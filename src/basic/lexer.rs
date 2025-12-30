@@ -120,7 +120,7 @@ impl<'a> Lexer<'a> {
         let mut lexer = Self {
             input: input.chars().peekable(),
             line: 1,
-            column: 0,
+            column: 1,
             current_char: None,
         };
         lexer.advance();
@@ -133,7 +133,7 @@ impl<'a> Lexer<'a> {
         if let Some(c) = self.current_char {
             if c == '\n' {
                 self.line += 1;
-                self.column = 0;
+                self.column = 1;
             } else {
                 self.column += 1;
             }

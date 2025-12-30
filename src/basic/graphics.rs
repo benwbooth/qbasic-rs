@@ -8,8 +8,24 @@
 //!
 //! Each terminal cell represents 2 vertical pixels
 
-use crate::screen::Screen;
-use crate::terminal::Color;
+
+/// A cell in the text screen buffer
+#[derive(Clone, Copy)]
+pub struct TextCell {
+    pub char: char,
+    pub fg: u8,
+    pub bg: u8,
+}
+
+impl Default for TextCell {
+    fn default() -> Self {
+        Self {
+            char: ' ',
+            fg: 7,  // Light gray
+            bg: 0,  // Black
+        }
+    }
+}
 
 /// Graphics pixel buffer
 pub struct GraphicsMode {
@@ -36,6 +52,13 @@ pub struct GraphicsMode {
 
     /// Cursor column (1-based)
     pub cursor_col: u16,
+
+    /// Text screen dimensions
+    pub text_cols: u16,
+    pub text_rows: u16,
+
+    /// Text screen buffer for text-mode output
+    pub text_screen: Vec<TextCell>,
 }
 
 impl GraphicsMode {
@@ -45,15 +68,21 @@ impl GraphicsMode {
         let pixel_height = rows * 2;
         let pixel_width = cols;
 
+        let text_cols = cols as u16;
+        let text_rows = rows as u16;
+
         Self {
             mode: 0,
             width: pixel_width,
             height: pixel_height,
             pixels: vec![0; (pixel_width * pixel_height) as usize],
-            foreground: 15,
-            background: 0,
+            foreground: 7,
+            background: 0,  // Black background
             cursor_row: 1,
             cursor_col: 1,
+            text_cols,
+            text_rows,
+            text_screen: vec![TextCell { char: ' ', fg: 7, bg: 0 }; (text_cols * text_rows) as usize],
         }
     }
 
@@ -83,6 +112,12 @@ impl GraphicsMode {
     /// Clear screen
     pub fn cls(&mut self) {
         self.pixels.fill(self.background);
+        // Clear text screen with current background color
+        for cell in &mut self.text_screen {
+            cell.char = ' ';
+            cell.fg = self.foreground;
+            cell.bg = self.background;
+        }
         self.cursor_row = 1;
         self.cursor_col = 1;
     }
@@ -97,6 +132,111 @@ impl GraphicsMode {
     pub fn locate(&mut self, row: u16, col: u16) {
         self.cursor_row = row;
         self.cursor_col = col;
+    }
+
+    /// Resize the text screen buffer to match terminal size
+    pub fn resize(&mut self, cols: u16, rows: u16) {
+        if cols == self.text_cols && rows == self.text_rows {
+            return;
+        }
+
+        let mut new_screen = vec![TextCell { char: ' ', fg: self.foreground, bg: self.background }; (cols * rows) as usize];
+
+        // Copy existing content
+        for row in 0..self.text_rows.min(rows) {
+            for col in 0..self.text_cols.min(cols) {
+                let old_idx = (row as usize) * (self.text_cols as usize) + (col as usize);
+                let new_idx = (row as usize) * (cols as usize) + (col as usize);
+                if old_idx < self.text_screen.len() && new_idx < new_screen.len() {
+                    new_screen[new_idx] = self.text_screen[old_idx];
+                }
+            }
+        }
+
+        self.text_cols = cols;
+        self.text_rows = rows;
+        self.text_screen = new_screen;
+
+        // Clamp cursor to new bounds
+        if self.cursor_col > cols {
+            self.cursor_col = cols;
+        }
+        if self.cursor_row > rows {
+            self.cursor_row = rows;
+        }
+    }
+
+    /// Print text at current cursor position
+    pub fn print_text(&mut self, text: &str, advance_cursor: bool) {
+        for ch in text.chars() {
+            if ch == '\n' {
+                self.cursor_row += 1;
+                self.cursor_col = 1;
+            } else {
+                self.put_char(self.cursor_row, self.cursor_col, ch);
+                self.cursor_col += 1;
+                if self.cursor_col > self.text_cols {
+                    self.cursor_col = 1;
+                    self.cursor_row += 1;
+                }
+            }
+        }
+        if advance_cursor {
+            self.cursor_row += 1;
+            self.cursor_col = 1;
+        }
+        // Scroll if needed
+        if self.cursor_row > self.text_rows {
+            self.scroll_up();
+            self.cursor_row = self.text_rows;
+        }
+    }
+
+    /// Put a character at a specific position
+    pub fn put_char(&mut self, row: u16, col: u16, ch: char) {
+        if row >= 1 && row <= self.text_rows && col >= 1 && col <= self.text_cols {
+            let idx = ((row - 1) as usize) * (self.text_cols as usize) + ((col - 1) as usize);
+            if idx < self.text_screen.len() {
+                self.text_screen[idx] = TextCell {
+                    char: ch,
+                    fg: self.foreground,
+                    bg: self.background,
+                };
+            }
+        }
+    }
+
+    /// Scroll the text screen up by one line
+    fn scroll_up(&mut self) {
+        let cols = self.text_cols as usize;
+        // Move all rows up by one
+        for row in 1..self.text_rows as usize {
+            let src_start = row * cols;
+            let dst_start = (row - 1) * cols;
+            for c in 0..cols {
+                self.text_screen[dst_start + c] = self.text_screen[src_start + c];
+            }
+        }
+        // Clear the last row
+        let last_row_start = ((self.text_rows - 1) as usize) * cols;
+        for c in 0..cols {
+            self.text_screen[last_row_start + c] = TextCell {
+                char: ' ',
+                fg: self.foreground,
+                bg: self.background,
+            };
+        }
+    }
+
+    /// Get a character at a specific position
+    pub fn get_char(&self, row: u16, col: u16) -> TextCell {
+        if row >= 1 && row <= self.text_rows && col >= 1 && col <= self.text_cols {
+            let idx = ((row - 1) as usize) * (self.text_cols as usize) + ((col - 1) as usize);
+            if idx < self.text_screen.len() {
+                return self.text_screen[idx];
+            }
+        }
+        TextCell::default()
     }
 
     /// Set a pixel
@@ -256,73 +396,6 @@ impl GraphicsMode {
         }
     }
 
-    /// Render graphics to screen buffer using Unicode half-blocks
-    pub fn render_to_screen(&self, screen: &mut Screen, row: u16, col: u16, term_width: u16, term_height: u16) {
-        if self.mode == 0 {
-            // Text mode - nothing to render
-            return;
-        }
-
-        // Calculate scaling
-        let scale_x = self.width as f32 / term_width as f32;
-        let scale_y = self.height as f32 / (term_height as f32 * 2.0); // *2 for half-blocks
-
-        for term_row in 0..term_height {
-            for term_col in 0..term_width {
-                // Get pixel coordinates for top and bottom half of this cell
-                let px = (term_col as f32 * scale_x) as i32;
-                let py_top = (term_row as f32 * 2.0 * scale_y) as i32;
-                let py_bot = ((term_row as f32 * 2.0 + 1.0) * scale_y) as i32;
-
-                let color_top = self.point(px, py_top);
-                let color_bot = self.point(px, py_bot);
-
-                // Determine character and colors
-                let (ch, fg, bg) = if color_top == color_bot {
-                    // Same color - use full block or space
-                    if color_top == 0 {
-                        (' ', Color::White, Color::Black)
-                    } else {
-                        ('█', dos_to_ansi(color_top), Color::Black)
-                    }
-                } else if color_top == 0 {
-                    // Only bottom half
-                    ('▄', dos_to_ansi(color_bot), Color::Black)
-                } else if color_bot == 0 {
-                    // Only top half
-                    ('▀', dos_to_ansi(color_top), Color::Black)
-                } else {
-                    // Both different colors - use upper half block with bg
-                    ('▀', dos_to_ansi(color_top), dos_to_ansi(color_bot))
-                };
-
-                screen.set(row + term_row, col + term_col, ch, fg, bg);
-            }
-        }
-    }
-}
-
-/// Convert DOS color index to ANSI color
-fn dos_to_ansi(color: u8) -> Color {
-    match color & 0x0F {
-        0 => Color::Black,
-        1 => Color::Blue,
-        2 => Color::Green,
-        3 => Color::Cyan,
-        4 => Color::Red,
-        5 => Color::Magenta,
-        6 => Color::Brown,
-        7 => Color::LightGray,
-        8 => Color::DarkGray,
-        9 => Color::LightBlue,
-        10 => Color::LightGreen,
-        11 => Color::LightCyan,
-        12 => Color::LightRed,
-        13 => Color::LightMagenta,
-        14 => Color::Yellow,
-        15 => Color::White,
-        _ => Color::White,
-    }
 }
 
 impl Default for GraphicsMode {

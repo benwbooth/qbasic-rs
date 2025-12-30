@@ -41,6 +41,7 @@ pub enum UnaryOp {
 
 /// Statement types
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum Stmt {
     /// Empty statement (blank line)
     Empty,
@@ -191,6 +192,7 @@ pub enum Stmt {
 
 /// Print item (can be expression, separator, or TAB/SPC)
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum PrintItem {
     Expr(Expr),
     Tab(Expr),
@@ -201,6 +203,7 @@ pub enum PrintItem {
 
 /// DIM variable with optional size
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct DimVar {
     pub name: String,
     pub dimensions: Vec<Expr>,
@@ -221,11 +224,13 @@ pub enum VarType {
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// Context stack for better error messages
+    context_stack: Vec<&'static str>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self { tokens, pos: 0, context_stack: Vec::new() }
     }
 
     fn current(&self) -> &Token {
@@ -241,7 +246,6 @@ impl Parser {
     }
 
     fn advance(&mut self) -> &Token {
-        let token = self.current();
         if self.pos < self.tokens.len() {
             self.pos += 1;
         }
@@ -249,22 +253,53 @@ impl Parser {
         &self.tokens[self.pos.saturating_sub(1)]
     }
 
+    /// Format an error with line/column and context stack
+    fn error(&self, msg: &str) -> String {
+        let token = self.current();
+        let mut err = format!("Line {}, col {}: {}", token.line, token.column, msg);
+        if !self.context_stack.is_empty() {
+            err.push_str("\n  Context:");
+            for ctx in self.context_stack.iter().rev() {
+                err.push_str(&format!("\n    in {}", ctx));
+            }
+        }
+        err
+    }
+
+    /// Push parsing context for error messages
+    fn push_context(&mut self, ctx: &'static str) {
+        self.context_stack.push(ctx);
+    }
+
+    /// Pop parsing context
+    fn pop_context(&mut self) {
+        self.context_stack.pop();
+    }
+
     fn expect(&mut self, expected: TokenKind) -> Result<&Token, String> {
         if std::mem::discriminant(self.peek()) == std::mem::discriminant(&expected) {
             Ok(self.advance())
         } else {
-            Err(format!(
-                "Expected {:?}, got {:?} at line {}",
-                expected,
-                self.peek(),
-                self.current().line
-            ))
+            Err(self.error(&format!("Expected {:?}, got {:?}", expected, self.peek())))
         }
     }
 
     fn skip_newlines(&mut self) {
         while matches!(self.peek(), TokenKind::Newline) {
             self.advance();
+        }
+    }
+
+    /// Check if current token is END followed by IF (lookahead)
+    fn is_end_if(&self) -> bool {
+        if !matches!(self.peek(), TokenKind::Keyword(Keyword::End)) {
+            return false;
+        }
+        // Look ahead to see if next token is IF
+        if let Some(next_token) = self.tokens.get(self.pos + 1) {
+            matches!(next_token.kind, TokenKind::Keyword(Keyword::If))
+        } else {
+            false
         }
     }
 
@@ -278,29 +313,29 @@ impl Parser {
                 break;
             }
 
-            let stmt = self.parse_statement()?;
-            statements.push(stmt);
+            let stmts = self.parse_statement()?;
+            statements.extend(stmts);
         }
 
         Ok(statements)
     }
 
-    /// Parse a single statement
-    fn parse_statement(&mut self) -> Result<Stmt, String> {
+    /// Parse a single statement, returning one or two statements if there's a line label
+    fn parse_statement(&mut self) -> Result<Vec<Stmt>, String> {
         // Check for line number label
         if let TokenKind::Integer(n) = self.peek().clone() {
             self.advance();
             // Could be followed by a statement on the same line
             if matches!(self.peek(), TokenKind::Newline | TokenKind::Eof) {
                 self.advance();
-                return Ok(Stmt::Label(n));
+                return Ok(vec![Stmt::Label(n)]);
             }
-            // Parse the rest of the statement
+            // Parse the rest of the statement - return both label AND statement
             let stmt = self.parse_statement_inner()?;
-            return Ok(stmt);
+            return Ok(vec![Stmt::Label(n), stmt]);
         }
 
-        self.parse_statement_inner()
+        Ok(vec![self.parse_statement_inner()?])
     }
 
     fn parse_statement_inner(&mut self) -> Result<Stmt, String> {
@@ -440,7 +475,7 @@ impl Parser {
             }
             TokenKind::Keyword(Keyword::Rem) => {
                 // Skip to end of line
-                let mut comment = String::new();
+                let comment = String::new();
                 while !matches!(self.peek(), TokenKind::Newline | TokenKind::Eof) {
                     self.advance();
                 }
@@ -567,6 +602,7 @@ impl Parser {
     }
 
     fn parse_if(&mut self) -> Result<Stmt, String> {
+        self.push_context("IF statement");
         let condition = self.parse_expression()?;
         self.expect(TokenKind::Keyword(Keyword::Then))?;
 
@@ -580,6 +616,7 @@ impl Parser {
             } else {
                 None
             };
+            self.pop_context();
             return Ok(Stmt::If {
                 condition,
                 then_branch: vec![then_stmt],
@@ -594,10 +631,11 @@ impl Parser {
         loop {
             self.skip_newlines();
             match self.peek() {
-                TokenKind::Keyword(Keyword::Else) | TokenKind::Keyword(Keyword::ElseIf) | TokenKind::Keyword(Keyword::EndIf) | TokenKind::Keyword(Keyword::End) => break,
+                TokenKind::Keyword(Keyword::Else) | TokenKind::Keyword(Keyword::ElseIf) | TokenKind::Keyword(Keyword::EndIf) => break,
+                TokenKind::Keyword(Keyword::End) if self.is_end_if() => break,
                 TokenKind::Eof => break,
                 _ => {
-                    then_branch.push(self.parse_statement()?);
+                    then_branch.extend(self.parse_statement()?);
                 }
             }
         }
@@ -609,10 +647,11 @@ impl Parser {
             loop {
                 self.skip_newlines();
                 match self.peek() {
-                    TokenKind::Keyword(Keyword::EndIf) | TokenKind::Keyword(Keyword::End) => break,
+                    TokenKind::Keyword(Keyword::EndIf) => break,
+                    TokenKind::Keyword(Keyword::End) if self.is_end_if() => break,
                     TokenKind::Eof => break,
                     _ => {
-                        else_stmts.push(self.parse_statement()?);
+                        else_stmts.extend(self.parse_statement()?);
                     }
                 }
             }
@@ -631,6 +670,7 @@ impl Parser {
             self.advance();
         }
 
+        self.pop_context();
         Ok(Stmt::If {
             condition,
             then_branch,
@@ -639,6 +679,7 @@ impl Parser {
     }
 
     fn parse_for(&mut self) -> Result<Stmt, String> {
+        self.push_context("FOR loop");
         let var = if let TokenKind::Identifier(name) = self.peek().clone() {
             self.advance();
             name
@@ -666,7 +707,7 @@ impl Parser {
             if matches!(self.peek(), TokenKind::Keyword(Keyword::Next) | TokenKind::Eof) {
                 break;
             }
-            body.push(self.parse_statement()?);
+            body.extend(self.parse_statement()?);
         }
 
         // Consume NEXT [var]
@@ -677,10 +718,12 @@ impl Parser {
             }
         }
 
+        self.pop_context();
         Ok(Stmt::For { var, start, end, step, body })
     }
 
     fn parse_while(&mut self) -> Result<Stmt, String> {
+        self.push_context("WHILE loop");
         let condition = self.parse_expression()?;
         self.skip_newlines();
 
@@ -690,17 +733,19 @@ impl Parser {
             if matches!(self.peek(), TokenKind::Keyword(Keyword::Wend) | TokenKind::Eof) {
                 break;
             }
-            body.push(self.parse_statement()?);
+            body.extend(self.parse_statement()?);
         }
 
         if matches!(self.peek(), TokenKind::Keyword(Keyword::Wend)) {
             self.advance();
         }
 
+        self.pop_context();
         Ok(Stmt::While { condition, body })
     }
 
     fn parse_do_loop(&mut self) -> Result<Stmt, String> {
+        self.push_context("DO loop");
         // Check for DO WHILE/UNTIL
         let (pre_condition, is_while) = if matches!(self.peek(), TokenKind::Keyword(Keyword::While)) {
             self.advance();
@@ -720,7 +765,7 @@ impl Parser {
             if matches!(self.peek(), TokenKind::Keyword(Keyword::Loop) | TokenKind::Eof) {
                 break;
             }
-            body.push(self.parse_statement()?);
+            body.extend(self.parse_statement()?);
         }
 
         self.expect(TokenKind::Keyword(Keyword::Loop))?;
@@ -730,6 +775,7 @@ impl Parser {
             if matches!(self.peek(), TokenKind::Keyword(Keyword::While)) {
                 self.advance();
                 let cond = self.parse_expression()?;
+                self.pop_context();
                 return Ok(Stmt::DoLoop {
                     condition: Some(cond),
                     is_while: true,
@@ -739,6 +785,7 @@ impl Parser {
             } else if matches!(self.peek(), TokenKind::Keyword(Keyword::Until)) {
                 self.advance();
                 let cond = self.parse_expression()?;
+                self.pop_context();
                 return Ok(Stmt::DoLoop {
                     condition: Some(cond),
                     is_while: false,
@@ -748,6 +795,7 @@ impl Parser {
             }
         }
 
+        self.pop_context();
         Ok(Stmt::DoLoop {
             condition: pre_condition,
             is_while,
@@ -1027,7 +1075,7 @@ impl Parser {
             } else if matches!(self.peek(), TokenKind::Eof) {
                 return Err("Unexpected end of file in SUB".to_string());
             } else {
-                body.push(self.parse_statement()?);
+                body.extend(self.parse_statement()?);
             }
         }
 
@@ -1071,7 +1119,7 @@ impl Parser {
             } else if matches!(self.peek(), TokenKind::Eof) {
                 return Err("Unexpected end of file in FUNCTION".to_string());
             } else {
-                body.push(self.parse_statement()?);
+                body.extend(self.parse_statement()?);
             }
         }
 
@@ -1338,7 +1386,7 @@ impl Parser {
                 self.expect(TokenKind::RightParen)?;
                 Ok(Expr::Paren(Box::new(expr)))
             }
-            _ => Err(format!("Unexpected token in expression: {:?}", self.peek())),
+            _ => Err(self.error(&format!("Unexpected token in expression: {:?}", self.peek()))),
         }
     }
 }
