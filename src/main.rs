@@ -80,7 +80,10 @@ impl App {
             self.draw();
 
             // Apply mouse cursor effect (orange box with inverted foreground)
-            self.screen.apply_mouse_cursor(self.state.mouse_row, self.state.mouse_col);
+            // But hide it when a BASIC program is running
+            if !matches!(self.state.run_state, RunState::Running | RunState::WaitingForInput) {
+                self.screen.apply_mouse_cursor(self.state.mouse_row, self.state.mouse_col);
+            }
 
             // Flush to terminal
             self.screen.flush(&mut self.terminal)?;
@@ -99,6 +102,9 @@ impl App {
                             self.state.run_state = RunState::Finished;
                             self.state.set_status("Program stopped");
                             self.current_program = None;
+                        } else if matches!(key, terminal::Key::Mouse(_)) {
+                            // Ignore mouse events for INKEY$ - just continue execution
+                            self.continue_after_input();
                         } else {
                             // Convert key to string for INKEY$
                             let key_str = if !raw_bytes.is_empty() {
@@ -145,8 +151,8 @@ impl App {
                 }
             }
 
-            if !had_input {
-                // No input this cycle - sleep briefly to avoid 100% CPU
+            if !had_input && !matches!(self.state.run_state, RunState::Running | RunState::WaitingForInput) {
+                // No input this cycle and not running a program - sleep briefly to avoid 100% CPU
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
 
@@ -1482,6 +1488,7 @@ impl App {
         // Clear output window and show it
         self.output.clear();
         self.state.show_output = true;
+        self.screen.invalidate(); // Force full redraw
 
         // Parse and execute
         let source = self.editor.content();

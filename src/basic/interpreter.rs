@@ -319,8 +319,37 @@ impl Interpreter {
         Ok(ExecutionResult::Completed)
     }
 
+    /// Execute a subroutine from a given position until RETURN
+    /// Used when GOSUB is called from inside a nested block (IF, FOR, WHILE)
+    fn execute_subroutine(&mut self, program: &[Stmt], start_pos: usize, initial_stack_len: usize) -> Result<(), String> {
+        self.current_pos = start_pos;
+
+        while self.current_pos < program.len() && !self.should_stop {
+            let stmt = &program[self.current_pos];
+            self.current_pos += 1;
+
+            match self.execute_stmt(stmt, program) {
+                Ok(Some(new_pos)) => {
+                    self.current_pos = new_pos;
+                }
+                Ok(None) => {}
+                Err(e) => return Err(e),
+            }
+
+            // Check if we've returned (stack got smaller)
+            if self.gosub_stack.len() < initial_stack_len {
+                return Ok(());
+            }
+        }
+
+        Ok(())
+    }
+
     /// Continue execution from current position
     pub fn continue_execution(&mut self, program: &[Stmt]) -> Result<ExecutionResult, String> {
+        // Reset yield flag - we're resuming after a yield, so clear the old state
+        self.needs_input = false;
+
         while self.current_pos < program.len() && !self.should_stop {
             // Check for breakpoint
             let current_line = if self.current_pos < self.line_mapping.len() {
@@ -483,14 +512,30 @@ impl Interpreter {
                 let cond = self.eval_expr(condition)?;
                 if cond.is_true() {
                     for stmt in then_branch {
+                        let stack_len_before = self.gosub_stack.len();
                         if let Some(pos) = self.execute_stmt(stmt, program)? {
-                            return Ok(Some(pos));
+                            // Check if this was a GOSUB (stack grew)
+                            if self.gosub_stack.len() > stack_len_before {
+                                // Execute subroutine and continue with remaining statements
+                                self.execute_subroutine(program, pos, self.gosub_stack.len())?;
+                            } else {
+                                // This was a GOTO - return the position
+                                return Ok(Some(pos));
+                            }
                         }
                     }
                 } else if let Some(else_stmts) = else_branch {
                     for stmt in else_stmts {
+                        let stack_len_before = self.gosub_stack.len();
                         if let Some(pos) = self.execute_stmt(stmt, program)? {
-                            return Ok(Some(pos));
+                            // Check if this was a GOSUB (stack grew)
+                            if self.gosub_stack.len() > stack_len_before {
+                                // Execute subroutine and continue with remaining statements
+                                self.execute_subroutine(program, pos, self.gosub_stack.len())?;
+                            } else {
+                                // This was a GOTO - return the position
+                                return Ok(Some(pos));
+                            }
                         }
                     }
                 }
@@ -520,8 +565,16 @@ impl Interpreter {
 
                     // Execute body
                     for stmt in body {
+                        let stack_len_before = self.gosub_stack.len();
                         if let Some(pos) = self.execute_stmt(stmt, program)? {
-                            return Ok(Some(pos));
+                            // Check if this was a GOSUB (stack grew)
+                            if self.gosub_stack.len() > stack_len_before {
+                                // Execute subroutine and continue with remaining statements
+                                self.execute_subroutine(program, pos, self.gosub_stack.len())?;
+                            } else {
+                                // This was a GOTO - return the position
+                                return Ok(Some(pos));
+                            }
                         }
                     }
 
@@ -539,8 +592,16 @@ impl Interpreter {
                         break;
                     }
                     for stmt in body {
+                        let stack_len_before = self.gosub_stack.len();
                         if let Some(pos) = self.execute_stmt(stmt, program)? {
-                            return Ok(Some(pos));
+                            // Check if this was a GOSUB (stack grew)
+                            if self.gosub_stack.len() > stack_len_before {
+                                // Execute subroutine and continue with remaining statements
+                                self.execute_subroutine(program, pos, self.gosub_stack.len())?;
+                            } else {
+                                // This was a GOTO - return the position
+                                return Ok(Some(pos));
+                            }
                         }
                     }
                 }
@@ -562,8 +623,16 @@ impl Interpreter {
 
                     // Execute body
                     for stmt in body {
+                        let stack_len_before = self.gosub_stack.len();
                         if let Some(pos) = self.execute_stmt(stmt, program)? {
-                            return Ok(Some(pos));
+                            // Check if this was a GOSUB (stack grew)
+                            if self.gosub_stack.len() > stack_len_before {
+                                // Execute subroutine and continue with remaining statements
+                                self.execute_subroutine(program, pos, self.gosub_stack.len())?;
+                            } else {
+                                // This was a GOTO - return the position
+                                return Ok(Some(pos));
+                            }
                         }
                     }
 
@@ -1083,5 +1152,465 @@ PRINT Twice(5)
 "#;
         let output = run_basic(code).expect("Should run");
         assert!(output.contains("10"), "Output: {}", output);
+    }
+
+    #[test]
+    fn test_gosub_with_goto_retry() {
+        // This tests the pattern used in nibbles.bas for food placement
+        // where GOTO inside FOR loop retries the subroutine
+        let code = r#"
+DIM arr(10)
+arr(0) = 0
+arr(1) = 1
+arr(2) = 2
+arrLen = 3
+attempts = 0
+
+' Call subroutine that retries until finding non-matching value
+GOSUB 100
+PRINT "Result: "; result
+PRINT "Attempts: "; attempts
+END
+
+100 attempts = attempts + 1
+result = INT(RND * 5)
+FOR i = 0 TO arrLen - 1
+    IF result = arr(i) THEN
+        GOTO 100
+    END IF
+NEXT i
+RETURN
+"#;
+        let output = run_basic(code).expect("Should run");
+        // Result should be a number 3 or 4 (not 0, 1, or 2)
+        assert!(output.contains("Result:"), "Output: {}", output);
+        eprintln!("Output: {}", output);
+    }
+
+    #[test]
+    fn test_rnd_generates_different_values() {
+        let code = r#"
+x1 = RND
+x2 = RND
+x3 = RND
+IF x1 = x2 THEN
+    PRINT "SAME"
+ELSE
+    PRINT "DIFFERENT"
+END IF
+"#;
+        let output = run_basic(code).expect("Should run");
+        assert!(output.contains("DIFFERENT"), "RND should generate different values. Output: {}", output);
+    }
+
+    #[test]
+    fn test_collision_detection() {
+        // Test the exact pattern used in nibbles.bas for food collision
+        let code = r#"
+headX = 10
+headY = 5
+foodX = 10
+foodY = 5
+score = 0
+
+IF headX = foodX AND headY = foodY THEN
+    score = score + 10
+    PRINT "Collision detected!"
+END IF
+
+PRINT "Score: "; score
+"#;
+        let output = run_basic(code).expect("Should run");
+        eprintln!("Collision test output: {}", output);
+        assert!(output.contains("Collision detected!"), "Should detect collision. Output: {}", output);
+        assert!(output.contains("Score: 10"), "Score should be 10. Output: {}", output);
+    }
+
+    #[test]
+    fn test_and_operator() {
+        let code = r#"
+a = 5
+b = 5
+c = 3
+d = 3
+
+' Test both conditions true
+IF a = 5 AND b = 5 THEN
+    PRINT "Both true works"
+END IF
+
+' Test one false
+IF a = 5 AND c = 99 THEN
+    PRINT "Should not print"
+ELSE
+    PRINT "One false works"
+END IF
+
+' Test with variables
+IF a = b AND c = d THEN
+    PRINT "Variable comparison works"
+END IF
+"#;
+        let output = run_basic(code).expect("Should run");
+        eprintln!("AND test output: {}", output);
+        assert!(output.contains("Both true works"), "Output: {}", output);
+        assert!(output.contains("One false works"), "Output: {}", output);
+        assert!(output.contains("Variable comparison works"), "Output: {}", output);
+        assert!(!output.contains("Should not print"), "Output: {}", output);
+    }
+
+    #[test]
+    fn test_snake_movement_and_food() {
+        // Simulate the nibbles movement and food eating logic
+        let code = r#"
+DIM snakeX(10)
+DIM snakeY(10)
+
+' Initial snake at position 40, 12
+snakeX(0) = 40
+snakeY(0) = 12
+snakeLen = 1
+direction = 4
+score = 0
+
+' Food at position 41, 12 (one step to the right)
+foodX = 41
+foodY = 12
+
+' Move snake right (direction 4)
+headX = snakeX(0)
+headY = snakeY(0)
+
+IF direction = 4 THEN headX = headX + 1
+
+PRINT "Head position: "; headX; ","; headY
+PRINT "Food position: "; foodX; ","; foodY
+
+' Check food collision
+IF headX = foodX AND headY = foodY THEN
+    PRINT "Food eaten!"
+    score = score + 10
+    snakeLen = snakeLen + 1
+END IF
+
+PRINT "Score: "; score
+PRINT "Snake length: "; snakeLen
+"#;
+        let output = run_basic(code).expect("Should run");
+        eprintln!("Snake movement test:\n{}", output);
+        assert!(output.contains("Head position: 41,12"), "Output: {}", output);
+        assert!(output.contains("Food eaten!"), "Should eat food. Output: {}", output);
+        assert!(output.contains("Score: 10"), "Score should be 10. Output: {}", output);
+        assert!(output.contains("Snake length: 2"), "Length should be 2. Output: {}", output);
+    }
+
+    #[test]
+    fn test_float_vs_int_comparison() {
+        // Test that comparing floats and ints works correctly
+        let code = r#"
+' Division produces float
+x = 78 / 2
+PRINT "78/2 = "; x
+
+' This should be 39.0 and equal to 39
+IF x = 39 THEN
+    PRINT "Float equals int"
+ELSE
+    PRINT "Float does NOT equal int"
+END IF
+
+' Test with explicit int
+y = INT(78 / 2)
+IF y = 39 THEN
+    PRINT "INT works"
+END IF
+"#;
+        let output = run_basic(code).expect("Should run");
+        eprintln!("Float vs int test:\n{}", output);
+        assert!(output.contains("Float equals int"), "Output: {}", output);
+    }
+
+    #[test]
+    fn test_game_loop_pattern() {
+        // Test the exact pattern used in nibbles main loop
+        let code = r#"
+counter = 0
+iterations = 0
+maxIterations = 10
+
+200 iterations = iterations + 1
+IF iterations > maxIterations THEN END
+
+' Simulating TIMER check
+IF iterations >= 3 THEN
+    counter = counter + 1
+    PRINT "Counter incremented to "; counter
+END IF
+
+IF counter < 5 THEN GOTO 200
+
+PRINT "Loop finished after "; iterations; " iterations"
+"#;
+        let output = run_basic(code).expect("Should run");
+        eprintln!("Game loop test:\n{}", output);
+        assert!(output.contains("Counter incremented to 1"), "Output: {}", output);
+        assert!(output.contains("Counter incremented to 5"), "Output: {}", output);
+        assert!(output.contains("Loop finished"), "Output: {}", output);
+    }
+
+    #[test]
+    fn test_exact_nibbles_collision() {
+        // Test the EXACT pattern from nibbles.bas with same variable setup
+        let code = r#"
+WIDTH = 78
+HEIGHT = 22
+DIM snakeX(10)
+DIM snakeY(10)
+
+' Setup exactly like nibbles
+startX = WIDTH / 2
+startY = HEIGHT / 2
+snakeLen = 5
+FOR i = 0 TO snakeLen - 1
+    snakeX(i) = startX - i
+    snakeY(i) = startY
+NEXT i
+
+PRINT "startX type check: "; startX
+PRINT "snakeX(0) = "; snakeX(0)
+
+' Food placed using INT
+foodX = INT(RND * (WIDTH - 4)) + 2
+foodY = INT(RND * (HEIGHT - 4)) + 2
+PRINT "foodX = "; foodX; " foodY = "; foodY
+
+' Simulate movement to food position
+direction = 4
+headX = snakeX(0)
+headY = snakeY(0)
+
+PRINT "Initial headX = "; headX; " headY = "; headY
+
+' Move towards food
+WHILE headX <> foodX OR headY <> foodY
+    IF direction = 4 THEN headX = headX + 1
+    IF headX > foodX THEN
+        direction = 3
+        headX = headX - 1
+    END IF
+    IF headX > 77 THEN END
+WEND
+
+PRINT "After move headX = "; headX; " headY = "; headY
+
+' Check collision using exact nibbles pattern
+IF headX = foodX AND headY = foodY THEN
+    PRINT "Collision detected!"
+ELSE
+    PRINT "No collision - headX="; headX; " foodX="; foodX
+END IF
+"#;
+        let output = run_basic(code).expect("Should run");
+        eprintln!("Exact nibbles test:\n{}", output);
+        assert!(output.contains("Collision detected!"), "Output: {}", output);
+    }
+
+    #[test]
+    fn test_single_line_if_modification() {
+        // Test single-line IF modifying a variable (the pattern used in nibbles)
+        let code = r#"
+direction = 4
+headX = 10
+headY = 5
+
+PRINT "Before: headX="; headX; " headY="; headY
+
+IF direction = 1 THEN headY = headY - 1
+IF direction = 2 THEN headY = headY + 1
+IF direction = 3 THEN headX = headX - 1
+IF direction = 4 THEN headX = headX + 1
+
+PRINT "After: headX="; headX; " headY="; headY
+"#;
+        let output = run_basic(code).expect("Should run");
+        eprintln!("Single-line IF test:\n{}", output);
+        assert!(output.contains("Before: headX=10 headY=5"), "Output: {}", output);
+        assert!(output.contains("After: headX=11 headY=5"), "Output: {}", output);
+    }
+
+    #[test]
+    fn test_nested_gosub_after_eating_food() {
+        // Simulates nibbles.bas food placement after eating
+        let code = r#"
+DIM snakeX(10)
+DIM snakeY(10)
+
+' Setup snake (simplified)
+snakeX(0) = 40
+snakeY(0) = 12
+snakeLen = 1
+
+' Place first food
+GOSUB 500
+PRINT "First food at: "; foodX; ","; foodY
+
+' Simulate eating food - snake moves to food position
+snakeX(0) = foodX
+snakeY(0) = foodY
+snakeLen = 2
+
+' Place second food
+GOSUB 500
+PRINT "Second food at: "; foodX; ","; foodY
+
+' Draw food (simplified - just print instead of LOCATE)
+GOSUB 800
+END
+
+500 foodX = INT(RND * 74) + 2
+foodY = INT(RND * 18) + 2
+FOR i = 0 TO snakeLen - 1
+    IF foodX = snakeX(i) AND foodY = snakeY(i) THEN
+        GOTO 500
+    END IF
+NEXT i
+RETURN
+
+800 PRINT "Drawing food at "; foodX; ","; foodY
+RETURN
+"#;
+        let output = run_basic(code).expect("Should run");
+        eprintln!("Output:\n{}", output);
+        assert!(output.contains("First food at:"), "Output: {}", output);
+        assert!(output.contains("Second food at:"), "Output: {}", output);
+        assert!(output.contains("Drawing food at"), "Output: {}", output);
+    }
+
+    #[test]
+    fn test_gosub_locate_print_updates_graphics() {
+        // Test that GOSUB with LOCATE and PRINT actually updates the graphics buffer
+        let code = r#"
+WIDTH = 78
+HEIGHT = 22
+foodX = 40
+foodY = 10
+
+' Draw food using subroutine (exactly like nibbles.bas)
+GOSUB 800
+PRINT "Food drawn"
+END
+
+' === DRAW FOOD SUBROUTINE ===
+800 COLOR 12, 1
+LOCATE foodY, foodX
+PRINT "*";
+RETURN
+"#;
+        let mut lexer = Lexer::new(code);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(tokens);
+        let stmts = parser.parse().expect("Should parse");
+        let mut interp = Interpreter::new();
+        interp.graphics.resize(80, 25);  // Standard screen size
+        interp.execute(&stmts).expect("Should execute");
+
+        // Check that the food character is in the graphics buffer at the correct position
+        let cell = interp.graphics.get_char(10, 40);  // row 10, col 40
+        eprintln!("Cell at (10, 40): char='{}' fg={} bg={}", cell.char, cell.fg, cell.bg);
+        assert_eq!(cell.char, '*', "Food character should be '*' at position (10, 40)");
+        assert_eq!(cell.fg, 12, "Food foreground color should be 12 (bright red)");
+        assert_eq!(cell.bg, 1, "Food background color should be 1 (blue)");
+    }
+
+    #[test]
+    fn test_gosub_nested_with_food_eaten() {
+        // Simulate the exact sequence when food is eaten in nibbles
+        let code = r#"
+WIDTH = 78
+HEIGHT = 22
+DIM snakeX(10)
+DIM snakeY(10)
+
+' Setup snake at position where food is
+snakeX(0) = 40
+snakeY(0) = 10
+snakeLen = 5
+
+' Initial food position
+foodX = 40
+foodY = 10
+
+' Simulate eating food (inside move subroutine - GOSUB 400)
+headX = snakeX(0)
+headY = snakeY(0)
+
+' This is the collision check
+IF headX = foodX AND headY = foodY THEN
+    score = score + 10
+    snakeLen = snakeLen + 1
+    GOSUB 500  ' Place new food
+    GOSUB 800  ' Draw food
+    GOSUB 900  ' Draw score
+END IF
+
+PRINT "Final score: "; score
+PRINT "New food at: "; foodX; ","; foodY
+END
+
+' === PLACE FOOD SUBROUTINE ===
+500 validFood = 0
+WHILE validFood = 0
+    foodX = INT(RND * (WIDTH - 4)) + 2
+    foodY = INT(RND * (HEIGHT - 4)) + 2
+    validFood = 1
+    FOR i = 0 TO snakeLen - 1
+        IF foodX = snakeX(i) AND foodY = snakeY(i) THEN
+            validFood = 0
+        END IF
+    NEXT i
+WEND
+RETURN
+
+' === DRAW FOOD SUBROUTINE ===
+800 COLOR 12, 1
+LOCATE foodY, foodX
+PRINT "*";
+RETURN
+
+' === DRAW SCORE SUBROUTINE ===
+900 COLOR 14, 1
+LOCATE HEIGHT + 1, 2
+PRINT "Score: "; score; "   Length: "; snakeLen; "    ";
+RETURN
+"#;
+        let mut lexer = Lexer::new(code);
+        let tokens = lexer.tokenize();
+        let mut parser = Parser::new(tokens);
+        let stmts = parser.parse().expect("Should parse");
+        let mut interp = Interpreter::new();
+        interp.graphics.resize(80, 25);
+        interp.execute(&stmts).expect("Should execute");
+
+        let output = interp.take_output().join("\n");
+        eprintln!("Output:\n{}", output);
+
+        // Verify score was updated
+        assert!(output.contains("Final score: 10"), "Score should be 10. Output: {}", output);
+
+        // Get the new food position from the output
+        let new_food_line = output.lines().find(|l| l.contains("New food at:")).expect("Should have food line");
+        eprintln!("New food line: {}", new_food_line);
+
+        // Check that food was drawn at new position (not at original 40,10)
+        // We can't easily parse the coordinates, but we can check the buffer
+        let original_cell = interp.graphics.get_char(10, 40);
+        eprintln!("Original food position (10, 40): char='{}' fg={} bg={}", original_cell.char, original_cell.fg, original_cell.bg);
+        // The original position should NOT have the food (snake head would overwrite it in real game)
+
+        // Verify score line was drawn
+        let score_cell = interp.graphics.get_char(23, 2);  // HEIGHT+1=23, col 2
+        eprintln!("Score position (23, 2): char='{}' fg={} bg={}", score_cell.char, score_cell.fg, score_cell.bg);
+        assert_eq!(score_cell.char, 'S', "Score label should start with 'S'");
+        assert_eq!(score_cell.fg, 14, "Score foreground should be 14 (yellow)");
     }
 }

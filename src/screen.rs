@@ -17,7 +17,7 @@ impl Default for Cell {
         Self {
             ch: ' ',
             fg: Color::LightGray,
-            bg: Color::Blue,
+            bg: Color::Black,
         }
     }
 }
