@@ -9,6 +9,7 @@ mod input;
 mod state;
 mod ui;
 mod basic;
+mod help;
 
 use std::io;
 use terminal::{Terminal, Color};
@@ -33,6 +34,8 @@ struct App {
     clipboard: Option<arboard::Clipboard>,
     /// Parsed program stored for resuming execution after NeedsInput
     current_program: Option<Vec<basic::parser::Stmt>>,
+    /// Help system
+    help: help::HelpSystem,
 }
 
 impl App {
@@ -40,6 +43,9 @@ impl App {
         let terminal = Terminal::new()?;
         let (width, height) = terminal.size();
         let screen = Screen::new(width, height);
+
+        let mut help = help::HelpSystem::new();
+        help.load_help_files();
 
         Ok(Self {
             terminal,
@@ -52,6 +58,7 @@ impl App {
             interpreter: Interpreter::new(),
             clipboard: arboard::Clipboard::new().ok(),
             current_program: None,
+            help,
         })
     }
 
@@ -236,7 +243,11 @@ impl App {
 
         // Draw dialog if active
         if !matches!(self.state.dialog, DialogType::None) {
-            Dialog::draw(&mut self.screen, &mut self.state, width, height);
+            if matches!(self.state.dialog, DialogType::Help(_)) {
+                self.draw_help_dialog();
+            } else {
+                Dialog::draw(&mut self.screen, &mut self.state, width, height);
+            }
         }
 
     }
@@ -485,6 +496,11 @@ impl App {
 
         // If dialog is open, route input directly to dialog handler
         if self.state.focus == Focus::Dialog {
+            // Handle help dialog specially
+            if matches!(self.state.dialog, DialogType::Help(_)) {
+                return self.handle_help_dialog_input(&event);
+            }
+
             // Check if this is a dialog that accepts input (text fields, lists, checkboxes)
             let is_input_dialog = matches!(
                 self.state.dialog,
@@ -811,8 +827,252 @@ impl App {
     }
 
     fn open_dialog(&mut self, dialog: DialogType) {
+        // Initialize help system if opening a help dialog
+        if let DialogType::Help(ref topic) = dialog {
+            self.help.navigate_to(topic);
+        }
         let (width, height) = self.screen.size();
         self.state.open_dialog_centered(dialog, width, height);
+    }
+
+    fn handle_help_dialog_input(&mut self, event: &InputEvent) -> bool {
+        match event {
+            InputEvent::Escape => {
+                self.state.close_dialog();
+            }
+            InputEvent::Enter => {
+                // Follow selected link
+                if let Some(link) = self.help.selected_link().cloned() {
+                    self.help.navigate_to(&link.target);
+                }
+            }
+            InputEvent::Backspace => {
+                // Go back in history
+                if !self.help.go_back() {
+                    self.state.close_dialog();
+                }
+            }
+            InputEvent::Tab => {
+                // Next link
+                let count = self.help.link_count();
+                if count > 0 {
+                    self.help.selected_link = (self.help.selected_link + 1) % count;
+                }
+            }
+            InputEvent::CursorUp => {
+                if self.help.scroll > 0 {
+                    self.help.scroll -= 1;
+                }
+            }
+            InputEvent::CursorDown => {
+                self.help.scroll += 1;
+            }
+            InputEvent::PageUp => {
+                self.help.scroll = self.help.scroll.saturating_sub(10);
+            }
+            InputEvent::PageDown => {
+                self.help.scroll += 10;
+            }
+            InputEvent::Home => {
+                self.help.scroll = 0;
+            }
+            InputEvent::End => {
+                // Scroll to end - we'll clamp in render
+                self.help.scroll = usize::MAX / 2;
+            }
+            InputEvent::MouseClick { row, col, .. } => {
+                if let Some(content_rect) = self.state.dialog_layout.as_ref().and_then(|l| l.get("content")) {
+                    let content_height = content_rect.height as usize;
+                    let content_width = (content_rect.width.saturating_sub(1)) as usize;
+                    let scrollbar_col = content_rect.x + content_rect.width - 1;
+
+                    // Check if click is on the scrollbar
+                    if *col == scrollbar_col && *row >= content_rect.y && *row < content_rect.y + content_rect.height {
+                        // Calculate scroll position from click position
+                        let (lines, _) = self.help.render(content_width);
+                        let max_scroll = lines.len().saturating_sub(content_height);
+                        if max_scroll > 0 && content_height > 0 {
+                            let click_offset = (*row - content_rect.y) as usize;
+                            self.help.scroll = (click_offset * max_scroll) / content_height.saturating_sub(1).max(1);
+                        }
+                        return true;
+                    }
+
+                    // Check if click is on a link
+                    if *row >= content_rect.y && *row < content_rect.y + content_rect.height {
+                        let line_idx = self.help.scroll + (*row - content_rect.y) as usize;
+                        let click_col = (*col - content_rect.x) as usize;
+
+                        // Get links and check if click is on one
+                        let (_, links) = self.help.render(content_width);
+                        for link in &links {
+                            if link.line == line_idx && click_col >= link.col_start && click_col < link.col_end {
+                                self.help.navigate_to(&link.target);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            InputEvent::MouseDrag { row, col, .. } => {
+                // Handle scrollbar dragging
+                if let Some(content_rect) = self.state.dialog_layout.as_ref().and_then(|l| l.get("content")) {
+                    let content_height = content_rect.height as usize;
+                    let content_width = (content_rect.width.saturating_sub(1)) as usize;
+                    let scrollbar_col = content_rect.x + content_rect.width - 1;
+
+                    if *col == scrollbar_col && *row >= content_rect.y && *row < content_rect.y + content_rect.height {
+                        let (lines, _) = self.help.render(content_width);
+                        let max_scroll = lines.len().saturating_sub(content_height);
+                        if max_scroll > 0 && content_height > 0 {
+                            let click_offset = (*row - content_rect.y) as usize;
+                            self.help.scroll = (click_offset * max_scroll) / content_height.saturating_sub(1).max(1);
+                        }
+                        return true;
+                    }
+                }
+            }
+            InputEvent::ScrollUp { .. } => {
+                if self.help.scroll > 0 {
+                    self.help.scroll -= 1;
+                }
+            }
+            InputEvent::ScrollDown { .. } => {
+                self.help.scroll += 1;
+            }
+            _ => {}
+        }
+        true
+    }
+
+    fn draw_help_dialog(&mut self) {
+        let x = self.state.dialog_x;
+        let y = self.state.dialog_y;
+        let width = self.state.dialog_width;
+        let height = self.state.dialog_height;
+
+        // Compute layout
+        let bounds = Rect::new(x, y, width, height);
+        let layout = compute_layout(&ui::layout::help_dialog_layout(), bounds);
+
+        // Draw shadow and background - black background, light gray text (QBasic help style)
+        self.screen.draw_shadow(y, x, width, height);
+        self.screen.fill(y, x, width, height, ' ', Color::LightGray, Color::Black);
+        self.screen.draw_box(y, x, width, height, Color::LightGray, Color::Black);
+
+        // Get title from help system
+        let title = self.help.current_document()
+            .map(|d| d.title.clone())
+            .unwrap_or_else(|| "Help".to_string());
+
+        // Draw title bar (cyan on black like QBasic)
+        if let Some(rect) = layout.get("title_bar") {
+            let title_str = format!(" {} ", title);
+            let title_x = rect.x + (rect.width.saturating_sub(title_str.len() as u16)) / 2;
+            self.screen.write_str(rect.y, title_x, &title_str, Color::Cyan, Color::Black);
+        }
+
+        // Get content area from layout
+        if let Some(content_rect) = layout.get("content") {
+            let content_width = (content_rect.width.saturating_sub(1)) as usize; // Leave room for scrollbar
+            let content_height = content_rect.height as usize;
+
+            // Get rendered content
+            let (lines, links) = self.help.render(content_width);
+
+            // Clamp scroll to valid range
+            let max_scroll = lines.len().saturating_sub(content_height);
+            if self.help.scroll > max_scroll {
+                self.help.scroll = max_scroll;
+            }
+            let scroll = self.help.scroll;
+            let selected_link = self.help.selected_link;
+
+            // Draw each visible line
+            for (i, line) in lines.iter().skip(scroll).take(content_height).enumerate() {
+                let row = content_rect.y + i as u16;
+                let col = content_rect.x;
+                let line_idx = scroll + i;
+
+                // Collect characters from the line for safe indexing
+                let chars: Vec<char> = line.chars().collect();
+
+                // Find all links on this line
+                let line_links: Vec<_> = links.iter().enumerate()
+                    .filter(|(_, link)| link.line == line_idx)
+                    .collect();
+
+                // Draw character by character
+                for (char_pos, ch) in chars.iter().enumerate() {
+                    if char_pos >= content_width {
+                        break;
+                    }
+
+                    // Check if this position is inside a link
+                    let mut in_link = false;
+                    let mut is_selected = false;
+
+                    for (link_idx, link) in &line_links {
+                        if char_pos >= link.col_start && char_pos < link.col_end {
+                            in_link = true;
+                            is_selected = *link_idx == selected_link;
+                            break;
+                        }
+                    }
+
+                    let (fg, bg) = if in_link {
+                        if is_selected {
+                            (Color::White, Color::Cyan) // Selected link
+                        } else {
+                            (Color::Green, Color::Black) // Normal link in green
+                        }
+                    } else {
+                        (Color::LightGray, Color::Black) // Normal text
+                    };
+
+                    self.screen.set(row, col + char_pos as u16, *ch, fg, bg);
+                }
+            }
+
+            // Draw vertical scrollbar
+            let scrollbar_col = content_rect.x + content_rect.width - 1;
+            if lines.len() > content_height && content_height > 0 {
+                // Draw scrollbar track
+                for i in 0..content_height {
+                    let row = content_rect.y + i as u16;
+                    self.screen.set(row, scrollbar_col, '░', Color::DarkGray, Color::Black);
+                }
+
+                // Calculate thumb position and size
+                let thumb_size = ((content_height * content_height) / lines.len().max(1)).max(1).min(content_height);
+                let thumb_pos = if max_scroll > 0 {
+                    (scroll * (content_height - thumb_size)) / max_scroll
+                } else {
+                    0
+                };
+
+                // Draw thumb
+                for i in 0..thumb_size {
+                    let row = content_rect.y + (thumb_pos + i) as u16;
+                    if row < content_rect.y + content_height as u16 {
+                        self.screen.set(row, scrollbar_col, '█', Color::Cyan, Color::Black);
+                    }
+                }
+            }
+        }
+
+        // Draw navigation bar
+        if let Some(nav_rect) = layout.get("nav_bar") {
+            let nav_hint = if self.help.link_count() > 0 {
+                "Tab:Link  Enter:Follow  Backspace:Back  Esc:Close"
+            } else {
+                "Arrows:Scroll  Backspace:Back  Esc:Close"
+            };
+            self.screen.write_str(nav_rect.y, nav_rect.x, nav_hint, Color::Cyan, Color::Black);
+        }
+
+        // Cache layout for hit testing
+        self.state.dialog_layout = Some(layout);
     }
 
     fn handle_file_dialog_ok(&mut self) {
@@ -1246,8 +1506,9 @@ impl App {
                 return true;
             }
             "start_button" => {
-                // Welcome dialog start button - show help
+                // Welcome dialog start button - show Survival Guide
                 self.state.close_dialog();
+                self.open_dialog(DialogType::Help("Survival Guide".to_string()));
                 return true;
             }
             "exit_button" => {

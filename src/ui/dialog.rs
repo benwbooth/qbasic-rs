@@ -888,6 +888,38 @@ impl Dialog {
 /// Get help text for a topic
 fn get_help_text(topic: &str) -> &'static str {
     match topic.to_uppercase().as_str() {
+        "SURVIVAL GUIDE" => r#"
+                    QBasic Survival Guide
+
+ GETTING AROUND
+   Use menus:     Press Alt, then highlighted letter
+   Shortcut keys: Press F1 for Help on any item
+
+ EDITING KEYS
+   Home/End       Move to start/end of line
+   Ctrl+Home/End  Move to start/end of program
+   Ctrl+Y         Delete current line
+   Ctrl+C/V/X     Copy, Paste, Cut selected text
+
+ RUNNING PROGRAMS
+   F5             Run program
+   Shift+F5       Restart program
+   F8             Step through code one line at a time
+   F9             Set/clear breakpoint on current line
+   Ctrl+Break     Stop running program
+
+ FILE OPERATIONS
+   Ctrl+N         New program
+   Ctrl+O         Open existing file
+   Ctrl+S         Save current file
+   Alt+F, X       Exit QBasic
+
+ GETTING HELP
+   F1             Help on current word or menu item
+   Shift+F1       Help Index
+
+ Press Escape to close this dialog.
+"#,
         "PRINT" => r#"
 PRINT Statement
 

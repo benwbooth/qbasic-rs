@@ -361,7 +361,7 @@ impl AppState {
             DialogType::None => (0, 0, 0, 0),
             DialogType::About => (1, 1, 50, 12),  // OK button only
             DialogType::Message { .. } => (1, 1, 50, 10),  // OK button only
-            DialogType::Help(_) => (1, 1, 70, 20),  // Close button only
+            DialogType::Help(_) => (0, 0, 76, 22),  // Full screen help viewer
             DialogType::Confirm { .. } => (3, 3, 50, 10),  // Yes, No, Cancel
             DialogType::NewProgram => (3, 3, 40, 8),  // Yes, No, Cancel
             // FileOpen: filename(0), directory(1), files(2), dirs(3), OK(4), Cancel(5), Help(6)

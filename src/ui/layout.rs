@@ -711,24 +711,16 @@ pub fn welcome_dialog_layout() -> LayoutItem {
 }
 
 /// Help dialog layout
-#[allow(dead_code)]
 pub fn help_dialog_layout() -> LayoutItem {
     LayoutItem::vstack(vec![
         // Title bar
-        LayoutItem::hstack(vec![
-            LayoutItem::leaf("title_bar").width(Size::Flex(1)),
-            LayoutItem::leaf("close").fixed_width(3),
-        ]).fixed_height(1),
+        LayoutItem::leaf("title_bar").fixed_height(1),
 
         // Content area (scrollable)
         LayoutItem::leaf("content").height(Size::Flex(1)),
 
-        // Buttons row
-        LayoutItem::hstack(vec![
-            LayoutItem::spacer(),
-            LayoutItem::leaf("close_button").fixed_width(10),
-            LayoutItem::spacer(),
-        ]).fixed_height(1),
+        // Status/navigation bar
+        LayoutItem::leaf("nav_bar").fixed_height(1),
     ]).padding(1)
 }
 
