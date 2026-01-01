@@ -28,16 +28,18 @@ impl ScrollbarState {
         self.content_size.saturating_sub(self.visible_size)
     }
 
-    /// Calculate thumb position within track
+    /// Calculate thumb position within track (0 to track_size-1)
     fn thumb_pos(&self, track_size: usize) -> usize {
-        if self.content_size <= 1 || track_size <= 1 {
+        if track_size == 0 {
             return 0;
         }
-        let max_scroll = self.max_scroll();
+        // Simple direct mapping: scroll 0 = thumb at 0, scroll max = thumb at end
+        let max_scroll = self.content_size.saturating_sub(1);
         if max_scroll == 0 {
             return 0;
         }
-        (self.scroll_pos.min(max_scroll) * track_size.saturating_sub(1)) / max_scroll
+        let pos = (self.scroll_pos.min(max_scroll) * (track_size.saturating_sub(1))) / max_scroll;
+        pos.min(track_size.saturating_sub(1))
     }
 }
 
@@ -130,9 +132,9 @@ pub fn draw_vertical(
         screen.set(r, col, '░', colors.track_fg, colors.track_bg);
     }
 
-    // Draw thumb if there's enough space
+    // Draw thumb if there's any content
     let track_size = (height.saturating_sub(2)) as usize;
-    if track_size >= 1 && state.content_size > state.visible_size {
+    if track_size >= 1 && state.content_size >= 1 {
         let thumb_pos = state.thumb_pos(track_size);
         let thumb_row = start_row + 1 + thumb_pos as u16;
         if thumb_row < end_row {
@@ -172,9 +174,9 @@ pub fn draw_horizontal(
         screen.set(row, c, '░', colors.track_fg, colors.track_bg);
     }
 
-    // Draw thumb if there's enough space
+    // Draw thumb if there's any content
     let track_size = (width.saturating_sub(2)) as usize;
-    if track_size >= 1 && state.content_size > state.visible_size {
+    if track_size >= 1 && state.content_size >= 1 {
         let thumb_pos = state.thumb_pos(track_size);
         let thumb_col = start_col + 1 + thumb_pos as u16;
         if thumb_col < end_col {
@@ -287,18 +289,21 @@ pub fn drag_to_vscroll(
     end_row: u16,
     state: &ScrollbarState,
 ) -> usize {
+    // Track is between arrows: from start_row+1 to end_row-1 inclusive
     let track_start = start_row + 1;
-    let track_end = end_row.saturating_sub(1);
-    let track_size = track_end.saturating_sub(track_start) as usize;
+    // Track size must match draw_vertical: height - 2 = (end_row - start_row + 1) - 2
+    let track_size = end_row.saturating_sub(start_row).saturating_sub(1) as usize;
 
-    if track_size < 1 || state.content_size <= 1 {
+    if track_size <= 1 || state.content_size <= 1 {
         return 0;
     }
 
     let track_pos = drag_row.saturating_sub(track_start) as usize;
-    let max_scroll = state.max_scroll();
+    // Use content_size - 1 as max scroll (matches thumb_pos calculation)
+    let max_scroll = state.content_size.saturating_sub(1);
 
-    (track_pos * max_scroll / track_size.max(1)).min(max_scroll)
+    // Map track position to scroll position (inverse of thumb_pos)
+    (track_pos * max_scroll / (track_size - 1)).min(max_scroll)
 }
 
 /// Calculate new scroll position from drag position on horizontal scrollbar
@@ -313,18 +318,21 @@ pub fn drag_to_hscroll(
     end_col: u16,
     state: &ScrollbarState,
 ) -> usize {
+    // Track is between arrows: from start_col+1 to end_col-1 inclusive
     let track_start = start_col + 1;
-    let track_end = end_col.saturating_sub(1);
-    let track_size = track_end.saturating_sub(track_start) as usize;
+    // Track size must match draw_horizontal: width - 2 = (end_col - start_col + 1) - 2
+    let track_size = end_col.saturating_sub(start_col).saturating_sub(1) as usize;
 
-    if track_size < 1 || state.content_size <= 1 {
+    if track_size <= 1 || state.content_size <= 1 {
         return 0;
     }
 
     let track_pos = drag_col.saturating_sub(track_start) as usize;
-    let max_scroll = state.max_scroll();
+    // Use content_size - 1 as max scroll (matches thumb_pos calculation)
+    let max_scroll = state.content_size.saturating_sub(1);
 
-    (track_pos * max_scroll / track_size.max(1)).min(max_scroll)
+    // Map track position to scroll position (inverse of thumb_pos)
+    (track_pos * max_scroll / (track_size - 1)).min(max_scroll)
 }
 
 #[cfg(test)]

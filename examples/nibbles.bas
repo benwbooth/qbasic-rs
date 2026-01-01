@@ -148,9 +148,19 @@ ateFood = 0
 IF headX = foodX AND headY = foodY THEN
     ateFood = 1
     score = score + 10
-    snakeLen = snakeLen + 1
+    ' Double the snake length - new segments start at tail
+    oldLen = snakeLen
+    snakeLen = snakeLen * 2
     IF snakeLen > MAXLEN - 1 THEN snakeLen = MAXLEN - 1
-    IF speed > 50 THEN speed = speed - 1
+    tailX = snakeX(oldLen - 1)
+    tailY = snakeY(oldLen - 1)
+    FOR i = oldLen TO snakeLen - 1
+        snakeX(i) = tailX
+        snakeY(i) = tailY
+    NEXT i
+    ' Double the speed (halve the delay)
+    speed = speed / 2
+    IF speed < 10 THEN speed = 10
     GOSUB 500
     GOSUB 800
     GOSUB 900

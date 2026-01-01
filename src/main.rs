@@ -929,6 +929,45 @@ impl App {
             }
             InputEvent::MouseClick { row, col, .. } | InputEvent::MouseDrag { row, col, .. } => {
                 let layout = self.state.dialog_layout.clone();
+                let is_drag = matches!(event, InputEvent::MouseDrag { .. });
+
+                // If already dragging vertical scrollbar, just update position
+                if self.state.vscroll_dragging {
+                    if let Some(vscroll_rect) = layout.as_ref().and_then(|l| l.get("vscrollbar")) {
+                        if let Some(content_rect) = layout.as_ref().and_then(|l| l.get("content")) {
+                            let content_width = content_rect.width as usize;
+                            let (lines, _, _, _) = self.help.render(content_width);
+                            let vstate = ScrollbarState::new(self.help.scroll, lines.len(), 1);
+                            let new_pos = scrollbar::drag_to_vscroll(
+                                *row,
+                                vscroll_rect.y,
+                                vscroll_rect.y + vscroll_rect.height.saturating_sub(1),
+                                &vstate,
+                            );
+                            self.help.scroll = new_pos;
+                            return true;
+                        }
+                    }
+                }
+
+                // If already dragging horizontal scrollbar, just update position
+                if self.state.hscroll_dragging {
+                    if let Some(hscroll_rect) = layout.as_ref().and_then(|l| l.get("hscrollbar")) {
+                        if let Some(content_rect) = layout.as_ref().and_then(|l| l.get("content")) {
+                            let content_width = content_rect.width as usize;
+                            let (_, _, _, max_width) = self.help.render(content_width);
+                            let hstate = ScrollbarState::new(self.help.scroll_col, max_width, 1);
+                            let new_pos = scrollbar::drag_to_hscroll(
+                                *col,
+                                hscroll_rect.x,
+                                hscroll_rect.x + hscroll_rect.width.saturating_sub(1),
+                                &hstate,
+                            );
+                            self.help.scroll_col = new_pos;
+                            return true;
+                        }
+                    }
+                }
 
                 // Handle vertical scrollbar click
                 if let Some(vscroll_rect) = layout.as_ref().and_then(|l| l.get("vscrollbar")) {
@@ -958,13 +997,18 @@ impl App {
                                     self.help.scroll += n;
                                 }
                                 scrollbar::ScrollAction::PageBack => {
-                                    self.help.scroll = self.help.scroll.saturating_sub(content_height);
+                                    if !is_drag {
+                                        self.help.scroll = self.help.scroll.saturating_sub(content_height);
+                                    }
                                 }
                                 scrollbar::ScrollAction::PageForward => {
-                                    self.help.scroll += content_height;
+                                    if !is_drag {
+                                        self.help.scroll += content_height;
+                                    }
                                 }
                                 scrollbar::ScrollAction::StartDrag | scrollbar::ScrollAction::SetPosition(_) => {
-                                    // Handle drag - calculate position from row
+                                    // Start dragging - track state and position
+                                    self.state.vscroll_dragging = true;
                                     let new_pos = scrollbar::drag_to_vscroll(
                                         *row,
                                         vscroll_rect.y,
@@ -1005,12 +1049,18 @@ impl App {
                                     self.help.scroll_col += n;
                                 }
                                 scrollbar::ScrollAction::PageBack => {
-                                    self.help.scroll_col = self.help.scroll_col.saturating_sub(content_width);
+                                    if !is_drag {
+                                        self.help.scroll_col = self.help.scroll_col.saturating_sub(content_width);
+                                    }
                                 }
                                 scrollbar::ScrollAction::PageForward => {
-                                    self.help.scroll_col += content_width;
+                                    if !is_drag {
+                                        self.help.scroll_col += content_width;
+                                    }
                                 }
                                 scrollbar::ScrollAction::StartDrag | scrollbar::ScrollAction::SetPosition(_) => {
+                                    // Start dragging - track state and position
+                                    self.state.hscroll_dragging = true;
                                     let new_pos = scrollbar::drag_to_hscroll(
                                         *col,
                                         hscroll_rect.x,
