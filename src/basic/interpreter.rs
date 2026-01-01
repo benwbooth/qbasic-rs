@@ -77,6 +77,15 @@ pub struct Procedure {
     pub is_function: bool,
 }
 
+/// Pending INPUT statement state
+#[derive(Clone)]
+pub struct PendingInput {
+    /// The variable names to receive input
+    pub variables: Vec<String>,
+    /// Current input buffer from keyboard
+    pub buffer: String,
+}
+
 /// Execution state
 pub struct Interpreter {
     /// Global variables
@@ -89,8 +98,11 @@ pub struct Interpreter {
     /// GOSUB return stack
     gosub_stack: Vec<usize>,
 
-    /// Line labels for GOTO/GOSUB
+    /// Numeric line labels for GOTO/GOSUB
     labels: HashMap<i64, usize>,
+
+    /// Text labels for GOTO/GOSUB
+    text_labels: HashMap<String, usize>,
 
     /// Current execution position (statement index)
     current_pos: usize,
@@ -133,6 +145,9 @@ pub struct Interpreter {
 
     /// Last time we yielded for display update (in milliseconds since epoch)
     last_yield_time: u128,
+
+    /// Pending INPUT statement waiting for user text input
+    pub pending_input: Option<PendingInput>,
 }
 
 impl Interpreter {
@@ -143,6 +158,7 @@ impl Interpreter {
             data_ptr: 0,
             gosub_stack: Vec::new(),
             labels: HashMap::new(),
+            text_labels: HashMap::new(),
             current_pos: 0,
             should_stop: false,
             graphics: GraphicsMode::new(80, 25),
@@ -157,6 +173,7 @@ impl Interpreter {
             pending_key: None,
             needs_input: false,
             last_yield_time: 0,
+            pending_input: None,
         }
     }
 
@@ -183,6 +200,67 @@ impl Interpreter {
     /// Get output buffer
     pub fn take_output(&mut self) -> Vec<String> {
         std::mem::take(&mut self.output_buffer)
+    }
+
+    /// Add a character to the pending INPUT buffer
+    pub fn add_input_char(&mut self, ch: char) {
+        if let Some(ref mut pending) = self.pending_input {
+            pending.buffer.push(ch);
+            // Echo the character to the screen
+            self.graphics.print_text(&ch.to_string(), false);
+        }
+    }
+
+    /// Handle backspace in the pending INPUT buffer
+    pub fn backspace_input(&mut self) {
+        if let Some(ref mut pending) = self.pending_input {
+            if pending.buffer.pop().is_some() {
+                // Move cursor back and erase character
+                if self.graphics.cursor_col > 1 {
+                    self.graphics.cursor_col -= 1;
+                    self.graphics.put_char(
+                        self.graphics.cursor_row,
+                        self.graphics.cursor_col,
+                        ' ',
+                    );
+                }
+            }
+        }
+    }
+
+    /// Complete the pending INPUT and assign values to variables
+    /// Returns true if input was processed, false if no pending input
+    pub fn complete_input(&mut self) -> bool {
+        if let Some(pending) = self.pending_input.take() {
+            // Echo newline
+            self.graphics.print_text("", true);
+
+            // Parse the input - for now just handle single variable
+            // Multiple variables would be comma-separated
+            let inputs: Vec<&str> = pending.buffer.split(',').collect();
+
+            for (i, var) in pending.variables.iter().enumerate() {
+                let input_str = inputs.get(i).map(|s| s.trim()).unwrap_or("");
+                let value = if var.ends_with('$') {
+                    Value::String(input_str.to_string())
+                } else if input_str.contains('.') {
+                    Value::Float(input_str.parse().unwrap_or(0.0))
+                } else {
+                    Value::Integer(input_str.parse().unwrap_or(0))
+                };
+                self.variables.insert(var.to_uppercase(), value);
+            }
+
+            self.needs_input = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if there's a pending INPUT
+    pub fn has_pending_input(&self) -> bool {
+        self.pending_input.is_some()
     }
 
     /// Get a variable value, checking local scope first
@@ -228,6 +306,7 @@ impl Interpreter {
         self.pending_key = None;
         self.needs_input = false;
         self.last_yield_time = 0;
+        self.pending_input = None;
         // Reset graphics to default text mode (white on black)
         self.graphics = GraphicsMode::new(80, 25);
         self.graphics.set_color(7, 0);  // Light gray on black
@@ -258,12 +337,16 @@ impl Interpreter {
     pub fn execute_with_debug(&mut self, program: &[Stmt]) -> Result<ExecutionResult, String> {
         // First pass: collect labels and DATA
         self.labels.clear();
+        self.text_labels.clear();
         self.data.clear();
         self.build_line_mapping(program);
 
         for (i, stmt) in program.iter().enumerate() {
             if let Stmt::Label(line) = stmt {
                 self.labels.insert(*line, i);
+            }
+            if let Stmt::TextLabel(name) = stmt {
+                self.text_labels.insert(name.to_uppercase(), i);
             }
             if let Stmt::Data(values) = stmt {
                 for val in values {
@@ -396,7 +479,7 @@ impl Interpreter {
     /// Returns Ok(Some(pos)) to jump to pos, Ok(None) to continue normally
     fn execute_stmt(&mut self, stmt: &Stmt, program: &[Stmt]) -> Result<Option<usize>, String> {
         match stmt {
-            Stmt::Empty | Stmt::Label(_) | Stmt::Rem(_) | Stmt::Data(_) => Ok(None),
+            Stmt::Empty | Stmt::Label(_) | Stmt::TextLabel(_) | Stmt::Rem(_) | Stmt::Data(_) => Ok(None),
 
             Stmt::Let(name, expr) => {
                 let value = self.eval_expr(expr)?;
@@ -486,25 +569,20 @@ impl Interpreter {
             }
 
             Stmt::Input(prompt, vars) => {
+                // Display the prompt
                 if let Some(p) = prompt {
+                    self.graphics.print_text(p, false);
                     self.output_buffer.push(p.clone());
                 }
+                // Display "? " prompt for input
+                self.graphics.print_text("? ", false);
 
-                // For now, just set to default values
-                // Real implementation would wait for input
-                for var in vars {
-                    if let Some(input_fn) = &self.input_fn {
-                        let input = input_fn(&format!("{}? ", var));
-                        let value = if var.ends_with('$') {
-                            Value::String(input)
-                        } else if input.contains('.') {
-                            Value::Float(input.parse().unwrap_or(0.0))
-                        } else {
-                            Value::Integer(input.parse().unwrap_or(0))
-                        };
-                        self.variables.insert(var.to_uppercase(), value);
-                    }
-                }
+                // Set up pending input state and signal that we need user input
+                self.pending_input = Some(PendingInput {
+                    variables: vars.clone(),
+                    buffer: String::new(),
+                });
+                self.needs_input = true;
                 Ok(None)
             }
 
@@ -663,12 +741,29 @@ impl Interpreter {
                 }
             }
 
+            Stmt::GoToLabel(name) => {
+                if let Some(&pos) = self.text_labels.get(&name.to_uppercase()) {
+                    Ok(Some(pos))
+                } else {
+                    Err(format!("Label '{}' not found", name))
+                }
+            }
+
             Stmt::GoSub(line) => {
                 if let Some(&pos) = self.labels.get(line) {
                     self.gosub_stack.push(self.current_pos);
                     Ok(Some(pos))
                 } else {
                     Err(format!("Line {} not found", line))
+                }
+            }
+
+            Stmt::GoSubLabel(name) => {
+                if let Some(&pos) = self.text_labels.get(&name.to_uppercase()) {
+                    self.gosub_stack.push(self.current_pos);
+                    Ok(Some(pos))
+                } else {
+                    Err(format!("Label '{}' not found", name))
                 }
             }
 

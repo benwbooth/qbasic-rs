@@ -614,6 +614,16 @@ impl Terminal {
         Ok(())
     }
 
+    /// Write sixel graphics data to terminal
+    ///
+    /// Positions cursor at (row, col) and writes the sixel data.
+    /// The sixel data should be a complete sixel sequence (DCS...ST)
+    pub fn write_sixel(&mut self, row: u16, col: u16, sixel_data: &str) -> io::Result<()> {
+        self.goto(row, col)?;
+        self.stdout.write_all(sixel_data.as_bytes())?;
+        Ok(())
+    }
+
     /// Write a character at current position
     pub fn write_char(&mut self, c: char) -> io::Result<()> {
         write!(self.stdout, "{}", c)?;

@@ -4,7 +4,7 @@ use crate::screen::Screen;
 use crate::terminal::Color;
 use crate::state::AppState;
 use crate::basic::graphics::GraphicsMode;
-use super::layout::Rect;
+use super::layout::{Rect, LayoutItem, compute_layout};
 
 /// The output window for program execution (black background, white text)
 pub struct OutputWindow {
@@ -133,7 +133,38 @@ impl OutputWindow {
     pub fn draw_graphics_screen(&self, screen: &mut Screen, graphics: &GraphicsMode, state: &AppState) {
         let (term_width, term_height) = screen.size();
 
-        // Render each cell of the graphics text screen
+        // Check if in graphics mode (SCREEN 7, 12, 13, etc.)
+        if graphics.is_graphics_mode() {
+            // Render pixel graphics using sixel
+            let scale = 1; // 1:1 pixel mapping
+            let sixel_data = graphics.render_sixel(scale);
+            screen.set_sixel(sixel_data);
+
+            // Also render text overlay from the text screen buffer
+            // This allows PRINT/LOCATE/INPUT to work in graphics mode
+            for row in 1..=term_height.min(graphics.text_rows) {
+                for col in 1..=term_width.min(graphics.text_cols) {
+                    let cell = graphics.get_char(row, col);
+                    // Only set non-space chars for overlay
+                    if cell.char != ' ' {
+                        let fg = dos_to_color(cell.fg);
+                        let bg = dos_to_color(cell.bg);
+                        screen.set(row, col, cell.char, fg, bg);
+                    }
+                }
+            }
+
+            // Show cursor if waiting for input
+            if state.run_state == crate::state::RunState::WaitingForInput {
+                screen.set_cursor(graphics.cursor_row, graphics.cursor_col);
+                screen.set_cursor_visible(true);
+            } else {
+                screen.set_cursor_visible(false);
+            }
+            return;
+        }
+
+        // Text mode: Render each cell of the graphics text screen
         // The buffer should be sized to match the terminal, so this covers everything
         for row in 1..=term_height {
             for col in 1..=term_width {
@@ -156,7 +187,13 @@ impl OutputWindow {
             screen.write_str(term_height, msg_x, msg, Color::Black, Color::White);
         }
 
-        screen.set_cursor_visible(false);
+        // Show cursor if waiting for input (in text mode too)
+        if state.run_state == crate::state::RunState::WaitingForInput {
+            screen.set_cursor(graphics.cursor_row, graphics.cursor_col);
+            screen.set_cursor_visible(true);
+        } else {
+            screen.set_cursor_visible(false);
+        }
     }
 
     /// Add output line
@@ -192,6 +229,61 @@ impl OutputWindow {
 impl Default for OutputWindow {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Result of handling an output window click
+#[derive(Clone, Debug, PartialEq)]
+pub enum OutputClickResult {
+    /// No action taken
+    None,
+    /// Close the output window
+    Close,
+}
+
+impl OutputWindow {
+    /// Build a layout for the title bar (first row of the window)
+    /// Creates regions for the close button
+    pub fn title_bar_layout(&self, bounds: Rect) -> LayoutItem {
+        // Title bar is the first row inside the window
+        // Layout: [border][title...][close_button][border]
+        LayoutItem::hstack(vec![
+            LayoutItem::leaf("left_border").fixed_width(1),
+            LayoutItem::leaf("title").width(super::layout::Size::Flex(1)),
+            LayoutItem::leaf("close_button").fixed_width(3), // [X]
+            LayoutItem::leaf("right_border").fixed_width(1),
+        ])
+        .fixed_height(1)
+        .fixed_width(bounds.width)
+    }
+
+    /// Handle a click on the output window
+    /// bounds is the output window rect from the main layout (0-based)
+    /// row, col are 1-based screen coordinates
+    pub fn handle_click(&self, row: u16, col: u16, bounds: Rect) -> OutputClickResult {
+        // Convert bounds to 1-based
+        let title_row = bounds.y + 1;
+
+        // Check if click is on the title bar row
+        if row == title_row {
+            // Build and compute title bar layout
+            let title_bounds = Rect {
+                x: bounds.x + 1, // 1-based column
+                y: title_row,
+                width: bounds.width,
+                height: 1,
+            };
+            let layout = compute_layout(&self.title_bar_layout(bounds), title_bounds);
+
+            // Check which element was hit
+            if let Some(hit_id) = layout.hit_test(row, col) {
+                if hit_id == "close_button" {
+                    return OutputClickResult::Close;
+                }
+            }
+        }
+
+        OutputClickResult::None
     }
 }
 

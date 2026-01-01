@@ -3,7 +3,7 @@
 use crate::screen::Screen;
 use crate::terminal::Color;
 use crate::state::AppState;
-use super::layout::Rect;
+use super::layout::{Rect, LayoutItem, ComputedLayout, compute_layout};
 
 /// Menu item definition
 #[derive(Clone)]
@@ -355,4 +355,162 @@ pub enum MenuAction {
     Close,
     Navigate,
     Execute(usize, usize), // (menu_index, item_index)
+}
+
+/// Result of handling a menu click using the layout system
+#[derive(Clone, Debug, PartialEq)]
+pub enum MenuClickResult {
+    /// No action taken
+    None,
+    /// Open menu at index
+    OpenMenu(usize),
+    /// Close the menu
+    CloseMenu,
+    /// Execute menu item (menu_index, item_index)
+    Execute(usize, usize),
+    /// Click was absorbed (on border, separator, etc.)
+    Absorbed,
+}
+
+impl MenuBar {
+    /// Build a layout for the menu bar titles
+    /// Returns an HStack of menu title leaves named "menu_0", "menu_1", etc.
+    pub fn titles_layout(&self) -> LayoutItem {
+        let children: Vec<LayoutItem> = self.menus.iter().enumerate()
+            .map(|(i, menu)| {
+                // Each menu title has a space before, the title, and a space after
+                LayoutItem::leaf(format!("menu_{}", i))
+                    .fixed_width(menu.title.len() as u16 + 2)
+                    .fixed_height(1)
+            })
+            .collect();
+
+        LayoutItem::hstack(children).spacing(1).fixed_height(1)
+    }
+
+    /// Compute the menu bar layout within the given bounds
+    pub fn compute_titles_layout(&self, bounds: Rect) -> ComputedLayout {
+        compute_layout(&self.titles_layout(), bounds)
+    }
+
+    /// Build a layout for a dropdown menu
+    /// Returns a VStack of item leaves named "item_0", "item_1", etc.
+    pub fn dropdown_layout(&self, menu_index: usize) -> LayoutItem {
+        let menu = &self.menus[menu_index];
+        let children: Vec<LayoutItem> = menu.items.iter().enumerate()
+            .map(|(i, _item)| {
+                LayoutItem::leaf(format!("item_{}", i))
+                    .fixed_height(1)
+            })
+            .collect();
+
+        LayoutItem::vstack(children)
+            .fixed_width(menu.width().saturating_sub(2)) // Subtract borders
+            .fixed_height(menu.items.len() as u16)
+    }
+
+    /// Get the bounds for a dropdown menu (1-based screen coordinates)
+    pub fn dropdown_bounds(&self, menu_index: usize) -> Rect {
+        // Calculate x position by summing widths of previous menus
+        let mut x = 2u16; // Start at column 2 (1 for padding + 1 for border offset)
+        for i in 0..menu_index {
+            x += self.menus[i].title.len() as u16 + 3; // title + spaces + spacing
+        }
+
+        let menu = &self.menus[menu_index];
+        Rect {
+            x,
+            y: 2, // Just below menu bar (row 2, 0-based)
+            width: menu.width(),
+            height: menu.items.len() as u16 + 2, // +2 for borders
+        }
+    }
+
+    /// Compute the dropdown layout within its bounds
+    pub fn compute_dropdown_layout(&self, menu_index: usize) -> ComputedLayout {
+        let bounds = self.dropdown_bounds(menu_index);
+        // Content area is inside the borders
+        let content_bounds = Rect {
+            x: bounds.x + 1,
+            y: bounds.y + 1,
+            width: bounds.width.saturating_sub(2),
+            height: bounds.height.saturating_sub(2),
+        };
+        compute_layout(&self.dropdown_layout(menu_index), content_bounds)
+    }
+
+    /// Handle a click on the menu bar area
+    /// bounds should be the menu_bar rect from the main layout (0-based)
+    /// row, col are 1-based screen coordinates
+    pub fn handle_bar_click(&self, row: u16, col: u16, bounds: Rect, state: &AppState) -> MenuClickResult {
+        // Convert bounds to 1-based for our layout computation
+        let layout_bounds = Rect {
+            x: bounds.x + 2, // Start at column 2 for the first menu
+            y: bounds.y + 1, // 1-based row
+            width: bounds.width.saturating_sub(2),
+            height: 1,
+        };
+
+        let layout = self.compute_titles_layout(layout_bounds);
+
+        // Check which menu title was clicked
+        if let Some(hit_id) = layout.hit_test(row, col) {
+            if let Some(idx_str) = hit_id.strip_prefix("menu_") {
+                if let Ok(idx) = idx_str.parse::<usize>() {
+                    return MenuClickResult::OpenMenu(idx);
+                }
+            }
+        }
+
+        // Clicked on menu bar but not on a menu title
+        if state.menu_open {
+            MenuClickResult::CloseMenu
+        } else {
+            MenuClickResult::None
+        }
+    }
+
+    /// Handle a click when a dropdown is open
+    /// row, col are 1-based screen coordinates
+    pub fn handle_dropdown_click(&self, row: u16, col: u16, state: &AppState) -> MenuClickResult {
+        if !state.menu_open {
+            return MenuClickResult::None;
+        }
+
+        let bounds = self.dropdown_bounds(state.menu_index);
+
+        // Check if click is outside the dropdown entirely
+        if row < bounds.y || row >= bounds.y + bounds.height
+            || col < bounds.x || col >= bounds.x + bounds.width
+        {
+            return MenuClickResult::CloseMenu;
+        }
+
+        // Check if click is on the border
+        if row == bounds.y || row == bounds.y + bounds.height - 1
+            || col == bounds.x || col == bounds.x + bounds.width - 1
+        {
+            return MenuClickResult::Absorbed;
+        }
+
+        // Click is in content area - use layout for hit testing
+        let layout = self.compute_dropdown_layout(state.menu_index);
+
+        if let Some(hit_id) = layout.hit_test(row, col) {
+            if let Some(idx_str) = hit_id.strip_prefix("item_") {
+                if let Ok(idx) = idx_str.parse::<usize>() {
+                    let menu = &self.menus[state.menu_index];
+                    if idx < menu.items.len() {
+                        if menu.items[idx].separator {
+                            return MenuClickResult::Absorbed;
+                        } else {
+                            return MenuClickResult::Execute(state.menu_index, idx);
+                        }
+                    }
+                }
+            }
+        }
+
+        MenuClickResult::Absorbed
+    }
 }

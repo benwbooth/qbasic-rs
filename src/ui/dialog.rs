@@ -4,6 +4,7 @@ use crate::screen::Screen;
 use crate::terminal::Color;
 use crate::state::{AppState, DialogType};
 use super::layout::{Rect, LayoutItem, Size, compute_layout, file_dialog_layout, find_dialog_layout, replace_dialog_layout, goto_line_dialog_layout, print_dialog_layout, welcome_dialog_layout, simple_input_dialog_layout, display_options_dialog_layout};
+use super::scrollbar::{ScrollbarState, ScrollbarColors, draw_vertical};
 
 /// Dialog component
 pub struct Dialog;
@@ -289,8 +290,16 @@ impl Dialog {
             let max_items = list_rect.height.saturating_sub(2) as usize;
             let item_width = list_rect.width.saturating_sub(2) as usize;
 
-            for (i, file) in state.dialog_files.iter().take(max_items).enumerate() {
-                let is_selected = i == state.dialog_file_index;
+            // Calculate scroll offset to keep selected item visible
+            let scroll_offset = if state.dialog_file_index >= max_items {
+                state.dialog_file_index - max_items + 1
+            } else {
+                0
+            };
+
+            for (i, file) in state.dialog_files.iter().skip(scroll_offset).take(max_items).enumerate() {
+                let actual_index = scroll_offset + i;
+                let is_selected = actual_index == state.dialog_file_index;
                 let fg = if is_selected { Color::White } else { Color::Black };
                 let bg = if is_selected { Color::Cyan } else { Color::LightGray };
                 let display: String = if file.len() > item_width {
@@ -299,6 +308,18 @@ impl Dialog {
                     format!("{:<width$}", file, width = item_width)
                 };
                 screen.write_str(list_rect.y + 1 + i as u16, list_rect.x + 1, &display, fg, bg);
+            }
+
+            // Draw scrollbar if there are more files than visible
+            if state.dialog_files.len() > max_items {
+                let scrollbar_state = ScrollbarState::new(
+                    state.dialog_file_index,
+                    state.dialog_files.len(),
+                    max_items,
+                );
+                let colors = ScrollbarColors::default();
+                let scrollbar_col = list_rect.x + list_rect.width - 1;
+                draw_vertical(screen, scrollbar_col, list_rect.y + 1, list_rect.y + list_rect.height - 2, &scrollbar_state, &colors);
             }
         }
 
@@ -314,8 +335,16 @@ impl Dialog {
             let max_items = list_rect.height.saturating_sub(2) as usize;
             let item_width = list_rect.width.saturating_sub(2) as usize;
 
-            for (i, dir) in state.dialog_dirs.iter().take(max_items).enumerate() {
-                let is_selected = i == state.dialog_dir_index;
+            // Calculate scroll offset to keep selected item visible
+            let scroll_offset = if state.dialog_dir_index >= max_items {
+                state.dialog_dir_index - max_items + 1
+            } else {
+                0
+            };
+
+            for (i, dir) in state.dialog_dirs.iter().skip(scroll_offset).take(max_items).enumerate() {
+                let actual_index = scroll_offset + i;
+                let is_selected = actual_index == state.dialog_dir_index;
                 let fg = if is_selected { Color::White } else { Color::Black };
                 let bg = if is_selected { Color::Cyan } else { Color::LightGray };
                 let display_name = format!("[{}]", dir);
@@ -325,6 +354,18 @@ impl Dialog {
                     format!("{:<width$}", display_name, width = item_width)
                 };
                 screen.write_str(list_rect.y + 1 + i as u16, list_rect.x + 1, &display, fg, bg);
+            }
+
+            // Draw scrollbar if there are more dirs than visible
+            if state.dialog_dirs.len() > max_items {
+                let scrollbar_state = ScrollbarState::new(
+                    state.dialog_dir_index,
+                    state.dialog_dirs.len(),
+                    max_items,
+                );
+                let colors = ScrollbarColors::default();
+                let scrollbar_col = list_rect.x + list_rect.width - 1;
+                draw_vertical(screen, scrollbar_col, list_rect.y + 1, list_rect.y + list_rect.height - 2, &scrollbar_state, &colors);
             }
         }
 

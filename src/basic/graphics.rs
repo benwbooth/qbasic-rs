@@ -1,12 +1,15 @@
-//! Graphics mode simulation using Unicode block characters
+//! Graphics mode simulation
 //!
-//! Simulates QBasic graphics modes by using Unicode half-block characters:
-//! - ▀ (upper half block) U+2580
-//! - ▄ (lower half block) U+2584
-//! - █ (full block) U+2588
-//! - ░ ▒ ▓ for patterns
+//! Supports two rendering backends:
+//! - Sixel graphics for terminals that support it (true pixel graphics)
+//! - Unicode half-block characters as fallback:
+//!   - ▀ (upper half block) U+2580
+//!   - ▄ (lower half block) U+2584
+//!   - █ (full block) U+2588
 //!
-//! Each terminal cell represents 2 vertical pixels
+//! Each terminal cell represents 2 vertical pixels in block mode
+
+use super::sixel::SixelEncoder;
 
 
 /// A cell in the text screen buffer
@@ -64,25 +67,25 @@ pub struct GraphicsMode {
 impl GraphicsMode {
     /// Create new graphics buffer
     pub fn new(cols: u32, rows: u32) -> Self {
-        // Double vertical resolution using half-blocks
-        let pixel_height = rows * 2;
-        let pixel_width = cols;
+        // Graphics resolution is fixed at 640x480 (VGA) for sixel rendering
+        let pixel_width = 640;
+        let pixel_height = 480;
 
         let text_cols = cols as u16;
         let text_rows = rows as u16;
 
         Self {
-            mode: 0,
+            mode: 12,  // Default to graphics mode for sixel rendering
             width: pixel_width,
             height: pixel_height,
             pixels: vec![0; (pixel_width * pixel_height) as usize],
-            foreground: 7,
-            background: 0,  // Black background
+            foreground: 15,  // White foreground
+            background: 0,   // Black background
             cursor_row: 1,
             cursor_col: 1,
             text_cols,
             text_rows,
-            text_screen: vec![TextCell { char: ' ', fg: 7, bg: 0 }; (text_cols * text_rows) as usize],
+            text_screen: vec![TextCell { char: ' ', fg: 15, bg: 0 }; (text_cols * text_rows) as usize],
         }
     }
 
@@ -401,5 +404,33 @@ impl GraphicsMode {
 impl Default for GraphicsMode {
     fn default() -> Self {
         Self::new(80, 25)
+    }
+}
+
+impl GraphicsMode {
+    /// Render the pixel buffer as sixel graphics
+    ///
+    /// Returns the sixel escape sequence string that can be written to terminal.
+    /// The `scale` parameter controls the pixel size (1 = native, 2 = 2x, etc.)
+    pub fn render_sixel(&self, scale: u32) -> String {
+        if self.mode == 0 {
+            // Text mode - no sixel output
+            return String::new();
+        }
+
+        let mut encoder = SixelEncoder::new();
+        encoder.encode(&self.pixels, self.width, self.height, scale).to_string()
+    }
+
+    /// Get reference to the pixel buffer
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    /// Check if in graphics mode (not text mode)
+    pub fn is_graphics_mode(&self) -> bool {
+        // Disable sixel graphics for now - use text mode rendering
+        false
+        // self.mode != 0
     }
 }

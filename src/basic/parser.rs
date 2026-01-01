@@ -46,8 +46,11 @@ pub enum Stmt {
     /// Empty statement (blank line)
     Empty,
 
-    /// Line with optional label
+    /// Line with optional numeric label
     Label(i64),
+
+    /// Text label (e.g., "StartNewRound:")
+    TextLabel(String),
 
     /// LET assignment: [LET] var = expr
     Let(String, Expr),
@@ -91,11 +94,17 @@ pub enum Stmt {
         body: Vec<Stmt>,
     },
 
-    /// GOTO line
+    /// GOTO line number
     GoTo(i64),
 
-    /// GOSUB line
+    /// GOTO text label
+    GoToLabel(String),
+
+    /// GOSUB line number
     GoSub(i64),
+
+    /// GOSUB text label
+    GoSubLabel(String),
 
     /// RETURN
     Return(Option<Expr>),
@@ -333,6 +342,22 @@ impl Parser {
             // Parse the rest of the statement - return both label AND statement
             let stmt = self.parse_statement_inner()?;
             return Ok(vec![Stmt::Label(n), stmt]);
+        }
+
+        // Check for text label (identifier followed by colon)
+        if let TokenKind::Identifier(name) = self.peek().clone() {
+            // Look ahead for colon
+            if self.tokens.get(self.pos + 1).map(|t| &t.kind) == Some(&TokenKind::Colon) {
+                self.advance(); // consume identifier
+                self.advance(); // consume colon
+                // Could be followed by a statement on the same line
+                if matches!(self.peek(), TokenKind::Newline | TokenKind::Eof) {
+                    return Ok(vec![Stmt::TextLabel(name)]);
+                }
+                // Parse the rest of the statement - return both label AND statement
+                let stmt = self.parse_statement_inner()?;
+                return Ok(vec![Stmt::TextLabel(name), stmt]);
+            }
         }
 
         Ok(vec![self.parse_statement_inner()?])
@@ -575,7 +600,8 @@ impl Parser {
     fn parse_input(&mut self) -> Result<Stmt, String> {
         let prompt = if let TokenKind::String(s) = self.peek().clone() {
             self.advance();
-            if matches!(self.peek(), TokenKind::Semicolon) {
+            // Accept either semicolon or comma after prompt
+            if matches!(self.peek(), TokenKind::Semicolon | TokenKind::Comma) {
                 self.advance();
             }
             Some(s)
@@ -805,22 +831,30 @@ impl Parser {
     }
 
     fn parse_goto(&mut self) -> Result<Stmt, String> {
-        if let TokenKind::Integer(n) = self.peek() {
-            let n = *n;
-            self.advance();
-            Ok(Stmt::GoTo(n))
-        } else {
-            Err("Expected line number after GOTO".to_string())
+        match self.peek().clone() {
+            TokenKind::Integer(n) => {
+                self.advance();
+                Ok(Stmt::GoTo(n))
+            }
+            TokenKind::Identifier(name) => {
+                self.advance();
+                Ok(Stmt::GoToLabel(name))
+            }
+            _ => Err("Expected line number or label after GOTO".to_string())
         }
     }
 
     fn parse_gosub(&mut self) -> Result<Stmt, String> {
-        if let TokenKind::Integer(n) = self.peek() {
-            let n = *n;
-            self.advance();
-            Ok(Stmt::GoSub(n))
-        } else {
-            Err("Expected line number after GOSUB".to_string())
+        match self.peek().clone() {
+            TokenKind::Integer(n) => {
+                self.advance();
+                Ok(Stmt::GoSub(n))
+            }
+            TokenKind::Identifier(name) => {
+                self.advance();
+                Ok(Stmt::GoSubLabel(name))
+            }
+            _ => Err("Expected line number or label after GOSUB".to_string())
         }
     }
 

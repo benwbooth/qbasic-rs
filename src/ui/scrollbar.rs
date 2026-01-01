@@ -29,7 +29,7 @@ impl ScrollbarState {
     }
 
     /// Calculate thumb position within track (0 to track_size-1)
-    fn thumb_pos(&self, track_size: usize) -> usize {
+    pub fn thumb_pos(&self, track_size: usize) -> usize {
         if track_size == 0 {
             return 0;
         }
@@ -333,6 +333,342 @@ pub fn drag_to_hscroll(
 
     // Map track position to scroll position (inverse of thumb_pos)
     (track_pos * max_scroll / (track_size - 1)).min(max_scroll)
+}
+
+// ============================================================================
+// Widget implementations
+// ============================================================================
+
+use crate::input::InputEvent;
+use super::layout::Rect;
+use super::widget::{Widget, EventResult, mouse_position};
+
+/// A vertical scrollbar widget
+pub struct VerticalScrollbar {
+    /// Current scroll position
+    scroll_pos: usize,
+    /// Total content size
+    content_size: usize,
+    /// Visible size
+    visible_size: usize,
+    /// Colors
+    colors: ScrollbarColors,
+    /// Whether currently dragging
+    dragging: bool,
+    /// Action prefix for events (e.g., "files_list" -> "files_list_scroll")
+    action_prefix: String,
+}
+
+impl VerticalScrollbar {
+    pub fn new(action_prefix: impl Into<String>) -> Self {
+        Self {
+            scroll_pos: 0,
+            content_size: 0,
+            visible_size: 0,
+            colors: ScrollbarColors::default(),
+            dragging: false,
+            action_prefix: action_prefix.into(),
+        }
+    }
+
+    pub fn with_colors(mut self, colors: ScrollbarColors) -> Self {
+        self.colors = colors;
+        self
+    }
+
+    /// Update the scrollbar state
+    pub fn update(&mut self, scroll_pos: usize, content_size: usize, visible_size: usize) {
+        self.scroll_pos = scroll_pos;
+        self.content_size = content_size;
+        self.visible_size = visible_size;
+    }
+
+    /// Get current scroll position
+    pub fn scroll_pos(&self) -> usize {
+        self.scroll_pos
+    }
+
+    /// Set scroll position (clamped to valid range)
+    pub fn set_scroll_pos(&mut self, pos: usize) {
+        let max = self.content_size.saturating_sub(self.visible_size);
+        self.scroll_pos = pos.min(max);
+    }
+
+    /// Scroll up by n items
+    pub fn scroll_up(&mut self, n: usize) {
+        self.scroll_pos = self.scroll_pos.saturating_sub(n);
+    }
+
+    /// Scroll down by n items
+    pub fn scroll_down(&mut self, n: usize) {
+        let max = self.content_size.saturating_sub(self.visible_size);
+        self.scroll_pos = (self.scroll_pos + n).min(max);
+    }
+
+    /// Page up
+    pub fn page_up(&mut self) {
+        self.scroll_up(self.visible_size.saturating_sub(1).max(1));
+    }
+
+    /// Page down
+    pub fn page_down(&mut self) {
+        self.scroll_down(self.visible_size.saturating_sub(1).max(1));
+    }
+
+    /// Check if scrollbar is needed (content exceeds visible size)
+    pub fn is_needed(&self) -> bool {
+        self.content_size > self.visible_size
+    }
+
+    /// Start dragging
+    pub fn start_drag(&mut self) {
+        self.dragging = true;
+    }
+
+    /// Stop dragging
+    pub fn stop_drag(&mut self) {
+        self.dragging = false;
+    }
+
+    /// Is currently dragging?
+    pub fn is_dragging(&self) -> bool {
+        self.dragging
+    }
+
+    fn state(&self) -> ScrollbarState {
+        ScrollbarState::new(self.scroll_pos, self.content_size, self.visible_size)
+    }
+}
+
+impl Widget for VerticalScrollbar {
+    fn draw(&self, screen: &mut Screen, bounds: Rect) {
+        if bounds.height < 3 || bounds.width < 1 {
+            return;
+        }
+
+        let start_row = bounds.y;
+        let end_row = bounds.y + bounds.height - 1;
+        let col = bounds.x;
+
+        draw_vertical(screen, col, start_row, end_row, &self.state(), &self.colors);
+    }
+
+    fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResult {
+        // Handle drag continuation regardless of position
+        if self.dragging {
+            match event {
+                InputEvent::MouseDrag { row, .. } => {
+                    let start_row = bounds.y;
+                    let end_row = bounds.y + bounds.height - 1;
+                    let new_pos = drag_to_vscroll(*row, start_row, end_row, &self.state());
+                    self.scroll_pos = new_pos;
+                    return EventResult::Action(format!("{}_scroll", self.action_prefix));
+                }
+                InputEvent::MouseRelease { .. } => {
+                    self.dragging = false;
+                    return EventResult::Consumed;
+                }
+                _ => {}
+            }
+        }
+
+        // Check if click is within bounds
+        let (row, col) = match mouse_position(event) {
+            Some(pos) => pos,
+            None => return EventResult::Ignored,
+        };
+
+        if !bounds.contains(row, col) {
+            return EventResult::Ignored;
+        }
+
+        // Only handle clicks
+        if !matches!(event, InputEvent::MouseClick { .. }) {
+            return EventResult::Ignored;
+        }
+
+        let start_row = bounds.y;
+        let end_row = bounds.y + bounds.height - 1;
+
+        let action = handle_vscroll_click(row, start_row, end_row, &self.state(), self.visible_size);
+
+        match action {
+            ScrollAction::ScrollBack(n) => {
+                self.scroll_up(n);
+                EventResult::Action(format!("{}_scroll", self.action_prefix))
+            }
+            ScrollAction::ScrollForward(n) => {
+                self.scroll_down(n);
+                EventResult::Action(format!("{}_scroll", self.action_prefix))
+            }
+            ScrollAction::PageBack => {
+                self.page_up();
+                EventResult::Action(format!("{}_scroll", self.action_prefix))
+            }
+            ScrollAction::PageForward => {
+                self.page_down();
+                EventResult::Action(format!("{}_scroll", self.action_prefix))
+            }
+            ScrollAction::StartDrag => {
+                self.dragging = true;
+                EventResult::Consumed
+            }
+            ScrollAction::SetPosition(pos) => {
+                self.scroll_pos = pos;
+                EventResult::Action(format!("{}_scroll", self.action_prefix))
+            }
+            ScrollAction::None => EventResult::Ignored,
+        }
+    }
+}
+
+/// A horizontal scrollbar widget
+pub struct HorizontalScrollbar {
+    /// Current scroll position
+    scroll_pos: usize,
+    /// Total content size
+    content_size: usize,
+    /// Visible size
+    visible_size: usize,
+    /// Colors
+    colors: ScrollbarColors,
+    /// Whether currently dragging
+    dragging: bool,
+    /// Action prefix for events
+    action_prefix: String,
+}
+
+impl HorizontalScrollbar {
+    pub fn new(action_prefix: impl Into<String>) -> Self {
+        Self {
+            scroll_pos: 0,
+            content_size: 0,
+            visible_size: 0,
+            colors: ScrollbarColors::default(),
+            dragging: false,
+            action_prefix: action_prefix.into(),
+        }
+    }
+
+    pub fn with_colors(mut self, colors: ScrollbarColors) -> Self {
+        self.colors = colors;
+        self
+    }
+
+    /// Update the scrollbar state
+    pub fn update(&mut self, scroll_pos: usize, content_size: usize, visible_size: usize) {
+        self.scroll_pos = scroll_pos;
+        self.content_size = content_size;
+        self.visible_size = visible_size;
+    }
+
+    /// Get current scroll position
+    pub fn scroll_pos(&self) -> usize {
+        self.scroll_pos
+    }
+
+    /// Set scroll position (clamped to valid range)
+    pub fn set_scroll_pos(&mut self, pos: usize) {
+        let max = self.content_size.saturating_sub(self.visible_size);
+        self.scroll_pos = pos.min(max);
+    }
+
+    /// Scroll left by n items
+    pub fn scroll_left(&mut self, n: usize) {
+        self.scroll_pos = self.scroll_pos.saturating_sub(n);
+    }
+
+    /// Scroll right by n items
+    pub fn scroll_right(&mut self, n: usize) {
+        let max = self.content_size.saturating_sub(self.visible_size);
+        self.scroll_pos = (self.scroll_pos + n).min(max);
+    }
+
+    fn state(&self) -> ScrollbarState {
+        ScrollbarState::new(self.scroll_pos, self.content_size, self.visible_size)
+    }
+}
+
+impl Widget for HorizontalScrollbar {
+    fn draw(&self, screen: &mut Screen, bounds: Rect) {
+        if bounds.width < 3 || bounds.height < 1 {
+            return;
+        }
+
+        let row = bounds.y;
+        let start_col = bounds.x;
+        let end_col = bounds.x + bounds.width - 1;
+
+        draw_horizontal(screen, row, start_col, end_col, &self.state(), &self.colors);
+    }
+
+    fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResult {
+        // Handle drag continuation regardless of position
+        if self.dragging {
+            match event {
+                InputEvent::MouseDrag { col, .. } => {
+                    let start_col = bounds.x;
+                    let end_col = bounds.x + bounds.width - 1;
+                    let new_pos = drag_to_hscroll(*col, start_col, end_col, &self.state());
+                    self.scroll_pos = new_pos;
+                    return EventResult::Action(format!("{}_scroll", self.action_prefix));
+                }
+                InputEvent::MouseRelease { .. } => {
+                    self.dragging = false;
+                    return EventResult::Consumed;
+                }
+                _ => {}
+            }
+        }
+
+        // Check if click is within bounds
+        let (row, col) = match mouse_position(event) {
+            Some(pos) => pos,
+            None => return EventResult::Ignored,
+        };
+
+        if !bounds.contains(row, col) {
+            return EventResult::Ignored;
+        }
+
+        // Only handle clicks
+        if !matches!(event, InputEvent::MouseClick { .. }) {
+            return EventResult::Ignored;
+        }
+
+        let start_col = bounds.x;
+        let end_col = bounds.x + bounds.width - 1;
+
+        let action = handle_hscroll_click(col, start_col, end_col, &self.state(), self.visible_size);
+
+        match action {
+            ScrollAction::ScrollBack(n) => {
+                self.scroll_left(n);
+                EventResult::Action(format!("{}_scroll", self.action_prefix))
+            }
+            ScrollAction::ScrollForward(n) => {
+                self.scroll_right(n);
+                EventResult::Action(format!("{}_scroll", self.action_prefix))
+            }
+            ScrollAction::PageBack => {
+                self.scroll_left(self.visible_size.saturating_sub(1).max(1));
+                EventResult::Action(format!("{}_scroll", self.action_prefix))
+            }
+            ScrollAction::PageForward => {
+                self.scroll_right(self.visible_size.saturating_sub(1).max(1));
+                EventResult::Action(format!("{}_scroll", self.action_prefix))
+            }
+            ScrollAction::StartDrag => {
+                self.dragging = true;
+                EventResult::Consumed
+            }
+            ScrollAction::SetPosition(pos) => {
+                self.scroll_pos = pos;
+                EventResult::Action(format!("{}_scroll", self.action_prefix))
+            }
+            ScrollAction::None => EventResult::Ignored,
+        }
+    }
 }
 
 #[cfg(test)]

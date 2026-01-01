@@ -16,8 +16,12 @@ use terminal::{Terminal, Color};
 use screen::Screen;
 use input::InputEvent;
 use state::{AppState, Focus, RunState, DialogType};
-use ui::{MenuBar, Editor, StatusBar, ImmediateWindow, OutputWindow, Dialog, Rect, compute_layout, file_dialog_layout, tokenize_line, TokenKind};
+use ui::{MenuBar, Editor, StatusBar, ImmediateWindow, OutputWindow, Dialog, Rect, compute_layout, file_dialog_layout, tokenize_line, TokenKind, MenuClickResult, ImmediateClickResult, OutputClickResult};
 use ui::scrollbar::{self, ScrollbarState, ScrollbarColors};
+use ui::file_dialog_widgets::{handle_file_list_click, FileListAction};
+use ui::dialog_manager::{DialogManager, DialogAction};
+use ui::editor_widgets::{handle_editor_click as widget_editor_click, EditorClickAction};
+use ui::scrollbar::ScrollAction;
 use ui::layout::main_screen_layout;
 use ui::menubar::MenuAction;
 use basic::{Lexer, Parser, Interpreter};
@@ -37,6 +41,8 @@ struct App {
     current_program: Option<Vec<basic::parser::Stmt>>,
     /// Help system
     help: help::HelpSystem,
+    /// Dialog widget manager
+    dialog_manager: DialogManager,
 }
 
 impl App {
@@ -60,6 +66,7 @@ impl App {
             clipboard: arboard::Clipboard::new().ok(),
             current_program: None,
             help,
+            dialog_manager: DialogManager::new(),
         })
     }
 
@@ -88,8 +95,8 @@ impl App {
             self.draw();
 
             // Apply mouse cursor effect (orange box with inverted foreground)
-            // But hide it when a BASIC program is running
-            if !matches!(self.state.run_state, RunState::Running | RunState::WaitingForInput) {
+            // But hide it when a BASIC program is running or showing output
+            if !self.state.show_output {
                 self.screen.apply_mouse_cursor(self.state.mouse_row, self.state.mouse_col);
             }
 
@@ -102,43 +109,74 @@ impl App {
             loop {
                 let (maybe_key, raw_bytes) = self.terminal.read_key_raw()?;
 
-                // If waiting for INKEY$ input, process key (or lack thereof) and continue execution
+                // If waiting for input, handle differently depending on whether it's INPUT or INKEY$
                 if self.state.run_state == RunState::WaitingForInput {
-                    if let Some(ref key) = maybe_key {
-                        // Check for Ctrl+C or Ctrl+Break to stop program
-                        if matches!(key, terminal::Key::Ctrl('c')) {
-                            self.state.run_state = RunState::Finished;
-                            self.state.set_status("Program stopped");
-                            self.current_program = None;
-                        } else if matches!(key, terminal::Key::Mouse(_)) {
-                            // Ignore mouse events for INKEY$ - just continue execution
-                            self.continue_after_input();
-                        } else {
-                            // Convert key to string for INKEY$
-                            let key_str = if !raw_bytes.is_empty() {
-                                // Use raw bytes for escape sequences (arrow keys, etc.)
-                                String::from_utf8_lossy(&raw_bytes).to_string()
+                    if self.interpreter.has_pending_input() {
+                        // Waiting for INPUT statement - collect text input
+                        if let Some(ref key) = maybe_key {
+                            // Check for Ctrl+C or Ctrl+Break to stop program
+                            if matches!(key, terminal::Key::Ctrl('c')) {
+                                self.state.run_state = RunState::Finished;
+                                self.state.set_status("Program stopped");
+                                self.current_program = None;
+                            } else if matches!(key, terminal::Key::Mouse(_)) {
+                                // Ignore mouse events
                             } else {
                                 match key {
-                                    terminal::Key::Char(c) => c.to_string(),
-                                    terminal::Key::Enter => "\r".to_string(),
-                                    terminal::Key::Escape => "\x1b".to_string(),
-                                    terminal::Key::Tab => "\t".to_string(),
-                                    _ => String::new(),
+                                    terminal::Key::Enter => {
+                                        // Complete the INPUT and continue execution
+                                        self.interpreter.complete_input();
+                                        self.continue_after_input();
+                                    }
+                                    terminal::Key::Backspace => {
+                                        self.interpreter.backspace_input();
+                                    }
+                                    terminal::Key::Char(c) => {
+                                        self.interpreter.add_input_char(*c);
+                                    }
+                                    _ => {}
                                 }
-                            };
-
-                            if !key_str.is_empty() {
-                                self.interpreter.pending_key = Some(key_str);
                             }
-                            // Continue execution (INKEY$ should return empty string if no key available)
+                        }
+                        break; // Only process one event when waiting for INPUT
+                    } else {
+                        // Waiting for INKEY$ - process key (or lack thereof) and continue execution
+                        if let Some(ref key) = maybe_key {
+                            // Check for Ctrl+C or Ctrl+Break to stop program
+                            if matches!(key, terminal::Key::Ctrl('c')) {
+                                self.state.run_state = RunState::Finished;
+                                self.state.set_status("Program stopped");
+                                self.current_program = None;
+                            } else if matches!(key, terminal::Key::Mouse(_)) {
+                                // Ignore mouse events for INKEY$ - just continue execution
+                                self.continue_after_input();
+                            } else {
+                                // Convert key to string for INKEY$
+                                let key_str = if !raw_bytes.is_empty() {
+                                    // Use raw bytes for escape sequences (arrow keys, etc.)
+                                    String::from_utf8_lossy(&raw_bytes).to_string()
+                                } else {
+                                    match key {
+                                        terminal::Key::Char(c) => c.to_string(),
+                                        terminal::Key::Enter => "\r".to_string(),
+                                        terminal::Key::Escape => "\x1b".to_string(),
+                                        terminal::Key::Tab => "\t".to_string(),
+                                        _ => String::new(),
+                                    }
+                                };
+
+                                if !key_str.is_empty() {
+                                    self.interpreter.pending_key = Some(key_str);
+                                }
+                                // Continue execution (INKEY$ should return empty string if no key available)
+                                self.continue_after_input();
+                            }
+                        } else {
+                            // No key pressed - continue execution with empty INKEY$
                             self.continue_after_input();
                         }
-                    } else {
-                        // No key pressed - continue execution with empty INKEY$
-                        self.continue_after_input();
+                        break; // Only process one event when waiting for input
                     }
-                    break; // Only process one event when waiting for input
                 } else if let Some(key) = maybe_key {
                     had_input = true;
                     // Normal input handling when not waiting for INKEY$
@@ -268,12 +306,13 @@ impl App {
                 return true;
             }
             // Program finished - wait for a KEYBOARD key press to close output
-            // Ignore mouse events
+            // Ignore all mouse events including movement
             if self.state.run_state == RunState::Finished {
                 let is_keyboard = !matches!(event,
                     InputEvent::MouseClick { .. } |
                     InputEvent::MouseDrag { .. } |
                     InputEvent::MouseRelease { .. } |
+                    InputEvent::MouseMove { .. } |
                     InputEvent::ScrollUp { .. } |
                     InputEvent::ScrollDown { .. }
                 );
@@ -474,58 +513,138 @@ impl App {
                 }
             }
 
-            // Handle editor selection drag
+            // Handle editor selection drag using cached layout
             if self.editor.is_selecting {
-                let (width, height) = self.screen.size();
-                let immediate_height = if self.state.show_immediate { self.state.immediate_height } else { 0 };
-                let editor_row = 2u16;
-                let editor_height = height.saturating_sub(2 + immediate_height + 1);
+                if let Some(ref layout) = self.state.main_layout {
+                    if let Some(editor_rect) = layout.get("editor") {
+                        // Content area is inside the border (offset by 2 for border + line numbers area)
+                        let content_top = editor_rect.y + 2;
+                        let content_left = editor_rect.x + 2;
 
-                // Check if drag is in or near editor content area
-                if *row >= editor_row && *row < editor_row + editor_height && *col >= 1 && *col < width {
-                    // Convert to editor coordinates
-                    let editor_y = row.saturating_sub(editor_row + 1);
-                    let editor_x = col.saturating_sub(2);
+                        // Check if drag is in editor content area
+                        if *row >= content_top && *col >= content_left {
+                            // Convert to editor coordinates
+                            let editor_y = row.saturating_sub(content_top) as usize;
+                            let editor_x = col.saturating_sub(content_left) as usize;
 
-                    // Update cursor position
-                    let target_line = self.editor.scroll_row + editor_y as usize;
-                    let target_col = self.editor.scroll_col + editor_x as usize;
+                            // Update cursor position
+                            let target_line = self.editor.scroll_row + editor_y;
+                            let target_col = self.editor.scroll_col + editor_x;
 
-                    if target_line < self.editor.buffer.line_count() {
-                        self.editor.cursor_line = target_line;
-                        let line_len = self.editor.buffer.line(target_line).map(|l| l.len()).unwrap_or(0);
-                        self.editor.cursor_col = target_col.min(line_len);
+                            if target_line < self.editor.buffer.line_count() {
+                                self.editor.cursor_line = target_line;
+                                let line_len = self.editor.buffer.line(target_line).map(|l| l.len()).unwrap_or(0);
+                                self.editor.cursor_col = target_col.min(line_len);
+                            }
+
+                            // Update selection based on click count and anchor
+                            match (self.state.click_count, self.state.selection_anchor) {
+                                (2, Some(anchor)) => {
+                                    // Double-click drag: extend by word
+                                    self.editor.extend_selection_by_word(anchor);
+                                }
+                                (3, Some(anchor)) => {
+                                    // Triple-click drag: extend by line
+                                    self.editor.extend_selection_by_line(anchor);
+                                }
+                                (4, Some(anchor)) => {
+                                    // Quadruple-click drag: extend by paragraph
+                                    self.editor.extend_selection_by_paragraph(anchor);
+                                }
+                                _ => {
+                                    // Single click drag: normal character-by-character selection
+                                    self.editor.update_selection();
+                                }
+                            }
+                            return true;
+                        }
                     }
-
-                    // Update selection based on click count and anchor
-                    match (self.state.click_count, self.state.selection_anchor) {
-                        (2, Some(anchor)) => {
-                            // Double-click drag: extend by word
-                            self.editor.extend_selection_by_word(anchor);
-                        }
-                        (3, Some(anchor)) => {
-                            // Triple-click drag: extend by line
-                            self.editor.extend_selection_by_line(anchor);
-                        }
-                        (4, Some(anchor)) => {
-                            // Quadruple-click drag: extend by paragraph
-                            self.editor.extend_selection_by_paragraph(anchor);
-                        }
-                        _ => {
-                            // Single click drag: normal character-by-character selection
-                            self.editor.update_selection();
-                        }
-                    }
-                    return true;
                 }
             }
         }
 
         // If dialog is open, route input directly to dialog handler
         if self.state.focus == Focus::Dialog {
+            // Sync dialog manager with current state
+            self.dialog_manager.sync_with_state(&self.state);
+
             // Handle help dialog specially
             if matches!(self.state.dialog, DialogType::Help(_)) {
                 return self.handle_help_dialog_input(&event);
+            }
+
+            // Try widget-based dialog handling first for supported dialogs
+            let dialog_action = self.dialog_manager.handle_event(&event, &self.state);
+
+            // Sync widget state back to AppState
+            self.dialog_manager.sync_to_state(&mut self.state);
+
+            // Handle the action
+            match dialog_action {
+                DialogAction::Cancel => {
+                    self.state.close_dialog();
+                    self.dialog_manager.clear();
+                    return true;
+                }
+                DialogAction::Find | DialogAction::FindNext => {
+                    self.find_next();
+                    return true;
+                }
+                DialogAction::Replace => {
+                    // In Replace dialog, the "Replace" button does find & verify
+                    self.find_and_verify();
+                    return true;
+                }
+                DialogAction::ReplaceAll => {
+                    self.replace_all();
+                    return true;
+                }
+                DialogAction::GoToLine | DialogAction::Ok => {
+                    self.execute_dialog_action();
+                    return true;
+                }
+                DialogAction::ToggleCase => {
+                    self.state.search_case_sensitive = !self.state.search_case_sensitive;
+                    return true;
+                }
+                DialogAction::ToggleWholeWord => {
+                    self.state.search_whole_word = !self.state.search_whole_word;
+                    return true;
+                }
+                DialogAction::FileSelected(idx) => {
+                    self.state.dialog_file_index = idx;
+                    if idx < self.state.dialog_files.len() {
+                        self.state.dialog_filename = self.state.dialog_files[idx].clone();
+                    }
+                    self.state.last_click_time = std::time::Instant::now();
+                    return true;
+                }
+                DialogAction::FileActivated(_idx) => {
+                    self.handle_file_dialog_ok();
+                    return true;
+                }
+                DialogAction::DirSelected(idx) => {
+                    self.state.dialog_dir_index = idx;
+                    self.state.last_click_time = std::time::Instant::now();
+                    return true;
+                }
+                DialogAction::DirActivated(idx) => {
+                    if idx < self.state.dialog_dirs.len() {
+                        let dir_name = self.state.dialog_dirs[idx].clone();
+                        self.state.navigate_to_dir(&dir_name);
+                    }
+                    return true;
+                }
+                DialogAction::FileDialogOk => {
+                    self.handle_file_dialog_ok();
+                    return true;
+                }
+                DialogAction::None => {
+                    // Fall through to legacy handling
+                }
+                _ => {
+                    // Other actions handled by legacy code
+                }
             }
 
             // Check if this is a dialog that accepts input (text fields, lists, checkboxes)
@@ -971,9 +1090,7 @@ impl App {
 
                 // Handle vertical scrollbar click
                 if let Some(vscroll_rect) = layout.as_ref().and_then(|l| l.get("vscrollbar")) {
-                    if *col >= vscroll_rect.x && *col < vscroll_rect.x + vscroll_rect.width
-                        && *row >= vscroll_rect.y && *row < vscroll_rect.y + vscroll_rect.height
-                    {
+                    if vscroll_rect.contains(*row, *col) {
                         if let Some(content_rect) = layout.as_ref().and_then(|l| l.get("content")) {
                             let content_width = content_rect.width as usize;
                             let content_height = content_rect.height as usize;
@@ -1026,7 +1143,7 @@ impl App {
 
                 // Handle horizontal scrollbar click
                 if let Some(hscroll_rect) = layout.as_ref().and_then(|l| l.get("hscrollbar")) {
-                    if *row == hscroll_rect.y && *col >= hscroll_rect.x && *col < hscroll_rect.x + hscroll_rect.width {
+                    if hscroll_rect.contains(*row, *col) {
                         if let Some(content_rect) = layout.as_ref().and_then(|l| l.get("content")) {
                             let content_width = content_rect.width as usize;
                             let (_, _, _, max_width) = self.help.render(content_width);
@@ -1079,9 +1196,7 @@ impl App {
                 // Check if click is on a link (only for MouseClick, not drag)
                 if matches!(event, InputEvent::MouseClick { .. }) {
                     if let Some(content_rect) = layout.as_ref().and_then(|l| l.get("content")) {
-                        if *row >= content_rect.y && *row < content_rect.y + content_rect.height
-                            && *col >= content_rect.x && *col < content_rect.x + content_rect.width
-                        {
+                        if content_rect.contains(*row, *col) {
                             let content_width = content_rect.width as usize;
                             let line_idx = self.help.scroll + (*row - content_rect.y) as usize;
                             let click_col = self.help.scroll_col + (*col - content_rect.x) as usize;
@@ -1471,48 +1586,62 @@ impl App {
                         }
                         "files_list" => {
                             if let Some(list_rect) = layout.get("files_list") {
-                                if row > list_rect.y && row < list_rect.y + list_rect.height - 1 {
-                                    let file_idx = (row - list_rect.y - 1) as usize;
-                                    let max_items = list_rect.height.saturating_sub(2) as usize;
-                                    if file_idx < self.state.dialog_files.len().min(max_items) {
-                                        let now = std::time::Instant::now();
-                                        let elapsed = now.duration_since(self.state.last_click_time);
-                                        let same_pos = self.state.last_click_pos == (row, col);
-                                        let is_double_click = same_pos && elapsed.as_millis() < 500;
+                                let (action, _consumed) = handle_file_list_click(
+                                    row,
+                                    col,
+                                    list_rect,
+                                    self.state.dialog_file_index,
+                                    self.state.dialog_files.len(),
+                                    self.state.last_click_time,
+                                    self.state.last_click_pos,
+                                );
 
-                                        self.state.dialog_file_index = file_idx;
-                                        self.state.dialog_filename = self.state.dialog_files[file_idx].clone();
-                                        self.state.last_click_time = now;
-                                        self.state.last_click_pos = (row, col);
-
-                                        if is_double_click {
-                                            self.handle_file_dialog_ok();
+                                match action {
+                                    FileListAction::Select(idx) => {
+                                        self.state.dialog_file_index = idx;
+                                        if idx < self.state.dialog_files.len() {
+                                            self.state.dialog_filename = self.state.dialog_files[idx].clone();
                                         }
+                                        self.state.last_click_time = std::time::Instant::now();
+                                        self.state.last_click_pos = (row, col);
                                     }
+                                    FileListAction::Activate(idx) => {
+                                        self.state.dialog_file_index = idx;
+                                        if idx < self.state.dialog_files.len() {
+                                            self.state.dialog_filename = self.state.dialog_files[idx].clone();
+                                        }
+                                        self.handle_file_dialog_ok();
+                                    }
+                                    FileListAction::Scroll(_) | FileListAction::None => {}
                                 }
                             }
                             return true;
                         }
                         "dirs_list" => {
                             if let Some(list_rect) = layout.get("dirs_list") {
-                                if row > list_rect.y && row < list_rect.y + list_rect.height - 1 {
-                                    let dir_idx = (row - list_rect.y - 1) as usize;
-                                    let max_items = list_rect.height.saturating_sub(2) as usize;
-                                    if dir_idx < self.state.dialog_dirs.len().min(max_items) {
-                                        let now = std::time::Instant::now();
-                                        let elapsed = now.duration_since(self.state.last_click_time);
-                                        let same_pos = self.state.last_click_pos == (row, col);
-                                        let is_double_click = same_pos && elapsed.as_millis() < 500;
+                                let (action, _consumed) = handle_file_list_click(
+                                    row,
+                                    col,
+                                    list_rect,
+                                    self.state.dialog_dir_index,
+                                    self.state.dialog_dirs.len(),
+                                    self.state.last_click_time,
+                                    self.state.last_click_pos,
+                                );
 
-                                        self.state.dialog_dir_index = dir_idx;
-                                        self.state.last_click_time = now;
+                                match action {
+                                    FileListAction::Select(idx) => {
+                                        self.state.dialog_dir_index = idx;
+                                        self.state.last_click_time = std::time::Instant::now();
                                         self.state.last_click_pos = (row, col);
-
-                                        if is_double_click {
-                                            let dir_name = self.state.dialog_dirs[dir_idx].clone();
+                                    }
+                                    FileListAction::Activate(idx) => {
+                                        if idx < self.state.dialog_dirs.len() {
+                                            let dir_name = self.state.dialog_dirs[idx].clone();
                                             self.state.navigate_to_dir(&dir_name);
                                         }
                                     }
+                                    FileListAction::Scroll(_) | FileListAction::None => {}
                                 }
                             }
                             return true;
@@ -1536,8 +1665,7 @@ impl App {
                 }
 
                 // Check if click is inside dialog bounds
-                if row >= dialog_y && row < dialog_y + dialog_height
-                   && col >= dialog_x && col < dialog_x + dialog_width {
+                if bounds.contains(row, col) {
                     return true;
                 }
 
@@ -1621,8 +1749,8 @@ impl App {
             }
 
             // Check if click is inside dialog bounds
-            if row >= dialog_y && row < dialog_y + dialog_height
-               && col >= dialog_x && col < dialog_x + dialog_width {
+            let dialog_bounds = Rect::new(dialog_x, dialog_y, dialog_width, dialog_height);
+            if dialog_bounds.contains(row, col) {
                 // Click inside dialog but not on button - absorb it
                 return true;
             }
@@ -1639,58 +1767,41 @@ impl App {
             let hit_row = row.saturating_sub(1);
             let hit_col = col.saturating_sub(1);
 
-            // If menu is open, check for clicks on menu items first
+            // If menu is open, check for clicks on dropdown first
             if self.state.menu_open {
-                let menu = &self.menubar.menus[self.state.menu_index];
-                // Calculate menu position
-                let mut menu_x = 1u16;
-                for i in 0..self.state.menu_index {
-                    menu_x += self.menubar.menus[i].title.len() as u16 + 3;
-                }
-                let menu_width = menu.width();
-                let menu_height = menu.items.len() as u16 + 2;
-                let menu_y = 2u16;
-
-                // Check if click is inside dropdown (not on border)
-                if row > menu_y && row < menu_y + menu_height - 1 && col > menu_x && col < menu_x + menu_width - 1 {
-                    let item_idx = (row - menu_y - 1) as usize;
-                    if item_idx < menu.items.len() && !menu.items[item_idx].separator {
-                        let menu_idx = self.state.menu_index;
+                match self.menubar.handle_dropdown_click(row, col, &self.state) {
+                    MenuClickResult::Execute(menu_idx, item_idx) => {
                         self.state.close_menu();
                         self.handle_menu_action(menu_idx, item_idx);
+                        return true;
                     }
-                    return true;
+                    MenuClickResult::Absorbed => {
+                        return true;
+                    }
+                    MenuClickResult::CloseMenu => {
+                        self.state.close_menu();
+                        // Fall through to handle click on underlying element
+                    }
+                    _ => {}
                 }
-
-                // Click on dropdown border - absorb but don't execute
-                if row >= menu_y && row < menu_y + menu_height && col >= menu_x && col < menu_x + menu_width {
-                    return true;
-                }
-
-                // Click outside menu - close it
-                self.state.close_menu();
-                // Fall through to handle click on underlying element
             }
 
             // Check which main area was clicked
             if let Some(hit_id) = layout.hit_test(hit_row, hit_col) {
                 match hit_id.as_str() {
                     "menu_bar" => {
-                        // Find which menu was clicked
-                        let mut x = 2u16;
-                        for (i, menu) in self.menubar.menus.iter().enumerate() {
-                            let menu_end = x + menu.title.len() as u16 + 2;
-                            if col >= x && col < menu_end {
-                                self.state.menu_index = i;
-                                self.state.menu_item = 0;
-                                self.state.open_menu();
-                                return true;
+                        if let Some(menu_bar_rect) = layout.get("menu_bar") {
+                            match self.menubar.handle_bar_click(row, col, menu_bar_rect, &self.state) {
+                                MenuClickResult::OpenMenu(i) => {
+                                    self.state.menu_index = i;
+                                    self.state.menu_item = 0;
+                                    self.state.open_menu();
+                                }
+                                MenuClickResult::CloseMenu => {
+                                    self.state.close_menu();
+                                }
+                                _ => {}
                             }
-                            x = menu_end + 1;
-                        }
-                        // Clicked on menu bar but not on a menu - close if open
-                        if self.state.menu_open {
-                            self.state.close_menu();
                         }
                         return true;
                     }
@@ -1702,39 +1813,27 @@ impl App {
                     }
                     "output" => {
                         if let Some(out_rect) = layout.get("output") {
-                            let out_row = out_rect.y + 1;
-                            let out_col = out_rect.x + 1;
-                            let out_width = out_rect.width;
-
-                            // Check if click is on close button [X]
-                            let close_x = out_col + out_width - 4;
-                            if row == out_row && col >= close_x && col < close_x + 3 {
+                            if let OutputClickResult::Close = self.output.handle_click(row, col, out_rect) {
                                 self.state.show_output = false;
-                                return true;
                             }
                         }
                         return true;
                     }
                     "immediate" => {
                         if let Some(imm_rect) = layout.get("immediate") {
-                            let imm_row = imm_rect.y + 1;
-                            let imm_col = imm_rect.x + 1;
-                            let imm_width = imm_rect.width;
-
-                            // Check if click is on maximize/minimize button [↑] or [↓]
-                            let button_x = imm_col + imm_width - 4;
-                            if row == imm_row && col >= button_x && col < button_x + 3 {
-                                self.state.immediate_maximized = !self.state.immediate_maximized;
-                                return true;
-                            }
-
-                            // Check if click is on top border (for resize dragging)
-                            if row == imm_row && !self.state.immediate_maximized {
-                                self.state.immediate_resize_dragging = true;
-                                return true;
+                            match self.immediate.handle_click(row, col, imm_rect, self.state.immediate_maximized) {
+                                ImmediateClickResult::ToggleMaximize => {
+                                    self.state.immediate_maximized = !self.state.immediate_maximized;
+                                }
+                                ImmediateClickResult::StartResize => {
+                                    self.state.immediate_resize_dragging = true;
+                                }
+                                ImmediateClickResult::Focus => {
+                                    self.state.focus = Focus::Immediate;
+                                }
+                                ImmediateClickResult::None => {}
                             }
                         }
-                        self.state.focus = Focus::Immediate;
                         return true;
                     }
                     "status_bar" => {
@@ -1846,195 +1945,134 @@ impl App {
         }
     }
 
-    /// Handle clicks within the editor area using layout-based hit testing
+    /// Handle clicks within the editor area using widget-based hit testing
     fn handle_editor_click(&mut self, row: u16, col: u16, editor_rect: Rect) -> bool {
-        // Convert editor rect to 1-based screen coordinates
-        let editor_row = editor_rect.y + 1;
-        let editor_col = editor_rect.x + 1;
-        let editor_width = editor_rect.width;
-        let editor_height = editor_rect.height;
+        let line_count = self.editor.buffer.line_count().max(1);
+        let max_line_len = self.editor.buffer.max_line_length().max(1);
 
-        // Scrollbar positions (relative to editor area)
-        let vscroll_col = editor_col + editor_width - 1;
-        let hscroll_row = editor_row + editor_height - 1;
+        let action = widget_editor_click(
+            row, col, editor_rect,
+            self.editor.scroll_row,
+            self.editor.scroll_col,
+            line_count,
+            max_line_len,
+            self.editor.visible_lines,
+            self.editor.visible_cols,
+        );
 
-        // Vertical scrollbar (right edge of editor, inside the border)
-        let vscroll_start = editor_row + 1;  // First row of scrollbar (up arrow)
-        let vscroll_end = hscroll_row - 1;   // Last row of scrollbar (down arrow)
-
-        // Debug: show click position and expected scrollbar positions
-        self.state.set_status(format!(
-            "click({},{}) vsb@c{} r{}-{} hsb@r{} c{}-{}",
-            row, col, vscroll_col, vscroll_start, vscroll_end,
-            hscroll_row, editor_col + 1, vscroll_col - 1
-        ));
-
-        if col == vscroll_col && row >= vscroll_start && row <= vscroll_end {
-            // Up arrow (first row of scrollbar)
-            if row == vscroll_start {
-                self.editor.scroll_row = self.editor.scroll_row.saturating_sub(1);
-                self.state.set_status(format!("VSCROLL UP: now at {}", self.editor.scroll_row));
-                return true;
-            }
-            // Down arrow (last row of scrollbar)
-            if row == vscroll_end {
-                self.editor.scroll_row += 1;
-                self.state.set_status(format!("VSCROLL DOWN: now at {}", self.editor.scroll_row));
-                return true;
-            }
-            // Click on track (between arrows) - page up/down or drag thumb
-            let track_height = vscroll_end.saturating_sub(vscroll_start).saturating_sub(1) as usize;
-            if track_height > 1 {
+        match action {
+            EditorClickAction::VScroll(scroll_action) => {
                 let page_size = self.editor.visible_lines.max(1);
-                let line_count = self.editor.buffer.line_count().max(1);
                 let max_scroll = line_count.saturating_sub(1);
 
-                // Calculate current thumb position (must match draw_scrollbars)
-                let thumb_pos = if line_count > 1 {
-                    (self.editor.scroll_row.min(max_scroll) * track_height.saturating_sub(1)) / max_scroll
-                } else {
-                    0
-                };
-                let thumb_row = vscroll_start + 1 + thumb_pos as u16;
-
-                if row == thumb_row {
-                    // Click on thumb - start dragging
-                    self.state.vscroll_dragging = true;
-                } else if row < thumb_row {
-                    // Click above thumb - page up
-                    self.editor.scroll_row = self.editor.scroll_row.saturating_sub(page_size);
-                    self.editor.cursor_line = self.editor.cursor_line.saturating_sub(page_size);
-                    self.editor.clamp_cursor();
-                } else {
-                    // Click below thumb - page down
-                    self.editor.scroll_row = (self.editor.scroll_row + page_size).min(max_scroll);
-                    self.editor.cursor_line = (self.editor.cursor_line + page_size).min(max_scroll);
-                    self.editor.clamp_cursor();
+                match scroll_action {
+                    ScrollAction::ScrollBack(n) => {
+                        self.editor.scroll_row = self.editor.scroll_row.saturating_sub(n);
+                    }
+                    ScrollAction::ScrollForward(n) => {
+                        self.editor.scroll_row = (self.editor.scroll_row + n).min(max_scroll);
+                    }
+                    ScrollAction::PageBack => {
+                        self.editor.scroll_row = self.editor.scroll_row.saturating_sub(page_size);
+                        self.editor.cursor_line = self.editor.cursor_line.saturating_sub(page_size);
+                        self.editor.clamp_cursor();
+                    }
+                    ScrollAction::PageForward => {
+                        self.editor.scroll_row = (self.editor.scroll_row + page_size).min(max_scroll);
+                        self.editor.cursor_line = (self.editor.cursor_line + page_size).min(max_scroll);
+                        self.editor.clamp_cursor();
+                    }
+                    ScrollAction::SetPosition(pos) => {
+                        self.editor.scroll_row = pos.min(max_scroll);
+                    }
+                    _ => {}
                 }
-                self.state.set_status(format!("VSCROLL: now at {}", self.editor.scroll_row));
+                true
             }
-            return true;
-        }
-
-        // Horizontal scrollbar (bottom edge of editor, inside the border)
-        let hscroll_start = editor_col + 1;  // First col of scrollbar (left arrow)
-        let hscroll_end = vscroll_col - 1;   // Last col of scrollbar (right arrow)
-
-        if row == hscroll_row && col >= hscroll_start && col <= hscroll_end {
-            // Left arrow (first col of scrollbar)
-            if col == hscroll_start {
-                self.editor.scroll_col = self.editor.scroll_col.saturating_sub(1);
-                self.state.set_status(format!("HSCROLL LEFT: now at {}", self.editor.scroll_col));
-                return true;
+            EditorClickAction::StartVDrag => {
+                self.state.vscroll_dragging = true;
+                true
             }
-            // Right arrow (last col of scrollbar)
-            if col == hscroll_end {
-                self.editor.scroll_col += 1;
-                self.state.set_status(format!("HSCROLL RIGHT: now at {}", self.editor.scroll_col));
-                return true;
-            }
-            // Click on track (between arrows) - page left/right or drag thumb
-            let track_width = hscroll_end.saturating_sub(hscroll_start).saturating_sub(1) as usize;
-            if track_width > 1 {
+            EditorClickAction::HScroll(scroll_action) => {
                 let page_size = self.editor.visible_cols.max(1);
-                let max_line_len = self.editor.buffer.max_line_length().max(1);
                 let max_scroll = max_line_len.saturating_sub(1);
 
-                // Calculate current thumb position (must match draw_scrollbars)
-                let thumb_pos = if max_line_len > 1 {
-                    (self.editor.scroll_col.min(max_scroll) * track_width.saturating_sub(1)) / max_scroll
+                match scroll_action {
+                    ScrollAction::ScrollBack(n) => {
+                        self.editor.scroll_col = self.editor.scroll_col.saturating_sub(n);
+                    }
+                    ScrollAction::ScrollForward(n) => {
+                        self.editor.scroll_col = (self.editor.scroll_col + n).min(max_scroll);
+                    }
+                    ScrollAction::PageBack => {
+                        self.editor.scroll_col = self.editor.scroll_col.saturating_sub(page_size);
+                    }
+                    ScrollAction::PageForward => {
+                        self.editor.scroll_col = (self.editor.scroll_col + page_size).min(max_scroll);
+                    }
+                    ScrollAction::SetPosition(pos) => {
+                        self.editor.scroll_col = pos.min(max_scroll);
+                    }
+                    _ => {}
+                }
+                true
+            }
+            EditorClickAction::StartHDrag => {
+                self.state.hscroll_dragging = true;
+                true
+            }
+            EditorClickAction::ContentClick { editor_y, editor_x } => {
+                // Set cursor position
+                let target_line = self.editor.scroll_row + editor_y;
+                let target_col = self.editor.scroll_col + editor_x;
+
+                if target_line < self.editor.buffer.line_count() {
+                    self.editor.cursor_line = target_line;
+                    let line_len = self.editor.buffer.line(target_line).map(|l| l.len()).unwrap_or(0);
+                    self.editor.cursor_col = target_col.min(line_len);
+                }
+
+                // Multi-click detection
+                let now = std::time::Instant::now();
+                let elapsed = now.duration_since(self.state.last_click_time);
+                let same_pos = self.state.last_click_pos == (row, col);
+                let is_quick_click = elapsed.as_millis() < 400;
+
+                if same_pos && is_quick_click {
+                    self.state.click_count = (self.state.click_count + 1).min(4);
                 } else {
-                    0
-                };
-                let thumb_col = hscroll_start + 1 + thumb_pos as u16;
-
-                if col == thumb_col {
-                    // Click on thumb - start dragging
-                    self.state.hscroll_dragging = true;
-                } else if col < thumb_col {
-                    // Click left of thumb - page left
-                    self.editor.scroll_col = self.editor.scroll_col.saturating_sub(page_size);
-                } else {
-                    // Click right of thumb - page right
-                    self.editor.scroll_col = (self.editor.scroll_col + page_size).min(max_scroll);
+                    self.state.click_count = 1;
                 }
-                self.state.set_status(format!("HSCROLL: now at {}", self.editor.scroll_col));
+
+                self.state.last_click_time = now;
+                self.state.last_click_pos = (row, col);
+
+                // Handle based on click count
+                match self.state.click_count {
+                    2 => {
+                        self.editor.select_word();
+                        self.editor.is_selecting = true;
+                        self.state.selection_anchor = self.editor.get_selection_bounds();
+                    }
+                    3 => {
+                        self.editor.select_line();
+                        self.editor.is_selecting = true;
+                        self.state.selection_anchor = self.editor.get_selection_bounds();
+                    }
+                    4 => {
+                        self.editor.select_paragraph();
+                        self.editor.is_selecting = true;
+                        self.state.selection_anchor = self.editor.get_selection_bounds();
+                    }
+                    _ => {
+                        self.editor.start_selection();
+                        self.state.selection_anchor = None;
+                    }
+                }
+                true
             }
-            return true;
+            EditorClickAction::None => true, // Click on border - absorb it
         }
-
-        // Click in editor content area (inside borders and scrollbars)
-        let content_left = editor_col + 1;
-        let content_right = vscroll_col - 1;
-        let content_top = editor_row + 1;
-        let content_bottom = hscroll_row - 1;
-
-        if row >= content_top && row < content_bottom && col >= content_left && col < content_right {
-            // Convert to editor coordinates
-            let editor_y = row - content_top;
-            let editor_x = col - content_left;
-
-            // Set cursor position
-            let target_line = self.editor.scroll_row + editor_y as usize;
-            let target_col = self.editor.scroll_col + editor_x as usize;
-
-            if target_line < self.editor.buffer.line_count() {
-                self.editor.cursor_line = target_line;
-                let line_len = self.editor.buffer.line(target_line).map(|l| l.len()).unwrap_or(0);
-                self.editor.cursor_col = target_col.min(line_len);
-            }
-
-            // Multi-click detection
-            let now = std::time::Instant::now();
-            let elapsed = now.duration_since(self.state.last_click_time);
-            let same_pos = self.state.last_click_pos == (row, col);
-            let is_quick_click = elapsed.as_millis() < 400;
-
-            if same_pos && is_quick_click {
-                // Increment click count (max 4)
-                self.state.click_count = (self.state.click_count + 1).min(4);
-            } else {
-                // Reset to single click
-                self.state.click_count = 1;
-            }
-
-            self.state.last_click_time = now;
-            self.state.last_click_pos = (row, col);
-
-            // Handle based on click count
-            match self.state.click_count {
-                2 => {
-                    // Double-click: select word
-                    self.editor.select_word();
-                    self.editor.is_selecting = true;
-                    // Store anchor for drag extension
-                    self.state.selection_anchor = self.editor.get_selection_bounds();
-                }
-                3 => {
-                    // Triple-click: select line
-                    self.editor.select_line();
-                    self.editor.is_selecting = true;
-                    // Store anchor for drag extension
-                    self.state.selection_anchor = self.editor.get_selection_bounds();
-                }
-                4 => {
-                    // Quadruple-click: select paragraph
-                    self.editor.select_paragraph();
-                    self.editor.is_selecting = true;
-                    // Store anchor for drag extension
-                    self.state.selection_anchor = self.editor.get_selection_bounds();
-                }
-                _ => {
-                    // Single click: start selection
-                    self.editor.start_selection();
-                    self.state.selection_anchor = None;
-                }
-            }
-            return true;
-        }
-
-        // Click on editor border or title bar - just absorb it
-        true
     }
 
     fn run_program(&mut self) {
@@ -2045,6 +2083,12 @@ impl App {
         self.output.clear();
         self.state.show_output = true;
         self.screen.invalidate(); // Force full redraw
+
+        // Clear terminal and screen buffer for fresh start
+        let _ = self.terminal.clear();
+        let _ = self.terminal.flush();
+        self.screen.clear_with(crate::terminal::Color::White, crate::terminal::Color::Black);
+        self.screen.invalidate();
 
         // Parse and execute
         let source = self.editor.content();
@@ -2074,13 +2118,14 @@ impl App {
                 self.current_program = Some(program.clone());
 
                 use crate::basic::interpreter::ExecutionResult;
+                let stmt_count = program.len();
                 match self.interpreter.execute_with_debug(&program) {
                     Ok(ExecutionResult::Completed) => {
                         // Show output in output window (black bg, white text)
                         for line in self.interpreter.take_output() {
                             self.output.add_output(&line);
                         }
-                        self.state.set_status("Program completed");
+                        self.state.set_status(format!("Program completed ({} stmts)", stmt_count));
                         self.state.current_line = None;
                         self.state.run_state = RunState::Finished;
                         self.current_program = None;

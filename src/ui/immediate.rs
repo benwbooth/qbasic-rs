@@ -3,7 +3,7 @@
 use crate::screen::Screen;
 use crate::terminal::Color;
 use crate::state::AppState;
-use super::layout::Rect;
+use super::layout::{Rect, LayoutItem, compute_layout};
 
 /// The immediate window at the bottom
 pub struct ImmediateWindow {
@@ -223,5 +223,71 @@ impl ImmediateWindow {
 impl Default for ImmediateWindow {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Result of handling an immediate window click
+#[derive(Clone, Debug, PartialEq)]
+pub enum ImmediateClickResult {
+    /// No action taken
+    None,
+    /// Toggle maximize/minimize
+    ToggleMaximize,
+    /// Start resize dragging (only when not maximized)
+    StartResize,
+    /// Focus the window
+    Focus,
+}
+
+impl ImmediateWindow {
+    /// Build a layout for the title bar (first row of the window)
+    /// Creates regions for the toggle button and border
+    pub fn title_bar_layout(&self, bounds: Rect) -> LayoutItem {
+        // Title bar is the first row inside the window
+        // Layout: [border][...title...][button][border]
+        LayoutItem::hstack(vec![
+            LayoutItem::leaf("left_border").fixed_width(1),
+            LayoutItem::leaf("title").width(super::layout::Size::Flex(1)),
+            LayoutItem::leaf("toggle_button").fixed_width(3), // [↑] or [↓]
+            LayoutItem::leaf("right_border").fixed_width(1),
+        ])
+        .fixed_height(1)
+        .fixed_width(bounds.width)
+    }
+
+    /// Handle a click on the immediate window
+    /// bounds is the immediate window rect from the main layout (0-based)
+    /// row, col are 1-based screen coordinates
+    pub fn handle_click(&self, row: u16, col: u16, bounds: Rect, is_maximized: bool) -> ImmediateClickResult {
+        // Convert bounds to 1-based
+        let title_row = bounds.y + 1;
+
+        // Check if click is on the title bar row
+        if row == title_row {
+            // Build and compute title bar layout
+            let title_bounds = Rect {
+                x: bounds.x + 1, // 1-based column
+                y: title_row,
+                width: bounds.width,
+                height: 1,
+            };
+            let layout = compute_layout(&self.title_bar_layout(bounds), title_bounds);
+
+            // Check which element was hit
+            if let Some(hit_id) = layout.hit_test(row, col) {
+                match hit_id.as_str() {
+                    "toggle_button" => return ImmediateClickResult::ToggleMaximize,
+                    "title" | "left_border" | "right_border" => {
+                        if !is_maximized {
+                            return ImmediateClickResult::StartResize;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Click anywhere else in the window - focus it
+        ImmediateClickResult::Focus
     }
 }

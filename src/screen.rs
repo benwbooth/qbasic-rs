@@ -38,6 +38,8 @@ pub struct Screen {
     cursor_col: u16,
     cursor_visible: bool,
     cursor_style: CursorStyle,
+    /// Pending sixel graphics data (if any)
+    sixel_data: Option<String>,
 }
 
 impl Screen {
@@ -55,6 +57,7 @@ impl Screen {
             cursor_col: 1,
             cursor_visible: true,
             cursor_style: CursorStyle::BlinkingUnderline, // Default to blinking underline
+            sixel_data: None,
         }
     }
 
@@ -241,6 +244,18 @@ impl Screen {
         self.cursor_style = style;
     }
 
+    /// Set sixel graphics data for next flush
+    ///
+    /// When set, flush() will render sixel graphics instead of the cell buffer.
+    pub fn set_sixel(&mut self, sixel_data: String) {
+        self.sixel_data = Some(sixel_data);
+    }
+
+    /// Clear sixel graphics data
+    pub fn clear_sixel(&mut self) {
+        self.sixel_data = None;
+    }
+
     /// Apply mouse cursor effect at given position (orange background, inverted foreground)
     pub fn apply_mouse_cursor(&mut self, row: u16, col: u16) {
         if row == 0 || col == 0 {
@@ -278,6 +293,11 @@ impl Screen {
 
     /// Flush changes to the terminal (only updates changed cells)
     pub fn flush(&mut self, term: &mut Terminal) -> io::Result<()> {
+        // Check for sixel graphics mode
+        if let Some(sixel_data) = self.sixel_data.take() {
+            return self.flush_sixel(term, &sixel_data);
+        }
+
         let mut last_fg = Color::Black;
         let mut last_bg = Color::Black;
         let mut last_row: u16 = 0;
@@ -336,6 +356,55 @@ impl Screen {
         for cell in &mut self.front {
             cell.ch = '\0';
         }
+    }
+
+    /// Flush sixel graphics with optional text overlay
+    ///
+    /// Outputs sixel graphics first, then overlays any non-empty text cells.
+    /// This allows mixing graphics and text (for INPUT prompts, scores, etc.)
+    pub fn flush_sixel(&mut self, term: &mut Terminal, sixel_data: &str) -> io::Result<()> {
+        // Position at top-left and output sixel graphics
+        term.goto(1, 1)?;
+        term.write_raw(sixel_data)?;
+
+        // Now overlay text cells that have content
+        // This allows PRINT/LOCATE/INPUT to work in graphics mode
+        let mut last_fg = Color::Black;
+        let mut last_bg = Color::Black;
+
+        for row in 1..=self.height {
+            for col in 1..=self.width {
+                if let Some(idx) = self.index(row, col) {
+                    let cell = self.back[idx];
+                    // Only draw non-space characters (text overlay)
+                    if cell.ch != ' ' && cell.ch != '\0' {
+                        term.goto(row, col)?;
+                        if cell.fg != last_fg || cell.bg != last_bg {
+                            term.set_colors(cell.fg, cell.bg)?;
+                            last_fg = cell.fg;
+                            last_bg = cell.bg;
+                        }
+                        term.write_char(cell.ch)?;
+                    }
+                }
+            }
+        }
+
+        // Position cursor if visible
+        if self.cursor_visible {
+            term.goto(self.cursor_row, self.cursor_col)?;
+            term.set_cursor_style(self.cursor_style)?;
+            term.show_cursor()?;
+        } else {
+            term.hide_cursor()?;
+        }
+
+        term.flush()?;
+
+        // Invalidate front buffer since we bypassed normal diff rendering
+        self.invalidate();
+
+        Ok(())
     }
 }
 
