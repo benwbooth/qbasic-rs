@@ -710,18 +710,41 @@ pub fn welcome_dialog_layout() -> LayoutItem {
     ])
 }
 
-/// Help dialog layout
+/// Help dialog layout with scrollbars (matches editor style)
 pub fn help_dialog_layout() -> LayoutItem {
     LayoutItem::vstack(vec![
-        // Title bar
-        LayoutItem::leaf("title_bar").fixed_height(1),
+        // Title bar with maximize button (on the border)
+        LayoutItem::hstack(vec![
+            LayoutItem::leaf("title_bar").width(Size::Flex(1)),
+            LayoutItem::leaf("maximize").fixed_width(3),
+        ]).fixed_height(1),
 
-        // Content area (scrollable)
-        LayoutItem::leaf("content").height(Size::Flex(1)),
+        // Main content area with vertical scrollbar (horizontal padding via spacers)
+        LayoutItem::hstack(vec![
+            LayoutItem::spacer().fixed_width(1), // Left padding
+            LayoutItem::leaf("content").width(Size::Flex(1)).height(Size::Flex(1)),
+            LayoutItem::leaf("vscrollbar").fixed_width(1).height(Size::Flex(1)),
+        ]).height(Size::Flex(1)),
+
+        // Horizontal scrollbar row
+        LayoutItem::hstack(vec![
+            LayoutItem::spacer().fixed_width(1), // Left padding
+            LayoutItem::leaf("hscrollbar").width(Size::Flex(1)),
+            LayoutItem::leaf("corner").fixed_width(1),
+        ]).fixed_height(1),
 
         // Status/navigation bar
-        LayoutItem::leaf("nav_bar").fixed_height(1),
-    ]).padding(1)
+        LayoutItem::hstack(vec![
+            LayoutItem::spacer().fixed_width(1), // Left padding
+            LayoutItem::leaf("nav_bar").width(Size::Flex(1)),
+        ]).fixed_height(1),
+
+        // Bottom row for resize handle (on the border)
+        LayoutItem::hstack(vec![
+            LayoutItem::spacer(),
+            LayoutItem::leaf("resize_handle").fixed_width(2),
+        ]).fixed_height(1),
+    ])
 }
 
 /// New Program confirmation dialog layout
@@ -895,4 +918,96 @@ pub fn menu_dropdown_layout(items: &[&str]) -> LayoutItem {
     }).collect();
 
     LayoutItem::vstack(children)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn print_layout_item(item: &LayoutItem, indent: usize) {
+        let pad = "  ".repeat(indent);
+        match &item.node {
+            LayoutNode::VStack { children, padding, .. } => {
+                println!("{}VStack(h={:?}, pad={}) [", pad, item.height, padding);
+                for child in children {
+                    print_layout_item(child, indent + 1);
+                }
+                println!("{}]", pad);
+            }
+            LayoutNode::HStack { children, padding, .. } => {
+                println!("{}HStack(h={:?}, pad={}) [", pad, item.height, padding);
+                for child in children {
+                    print_layout_item(child, indent + 1);
+                }
+                println!("{}]", pad);
+            }
+            LayoutNode::Leaf { id } => {
+                println!("{}Leaf({}, h={:?})", pad, id, item.height);
+            }
+            LayoutNode::Spacer => {
+                println!("{}Spacer(h={:?})", pad, item.height);
+            }
+        }
+    }
+
+    #[test]
+    fn test_help_dialog_layout() {
+        // Simulate a dialog at position (10, 5) with size 80x25
+        let bounds = Rect::new(10, 5, 80, 25);
+        let layout_item = help_dialog_layout();
+
+        // Debug: print the layout structure
+        println!("Layout structure:");
+        print_layout_item(&layout_item, 0);
+
+        let layout = compute_layout(&layout_item, bounds);
+
+        println!("\nHelp dialog layout (80x25 at 10,5):");
+        let mut rects: Vec<_> = layout.rects.iter().collect();
+        rects.sort_by_key(|(_, r)| (r.y, r.x));
+        for (id, rect) in rects {
+            println!("  {}: {}x{} at ({},{})", id, rect.width, rect.height, rect.x, rect.y);
+        }
+
+        // Check that content has reasonable dimensions
+        let content = layout.get("content").expect("content rect should exist");
+        assert!(content.height >= 10, "content height {} should be >= 10", content.height);
+        assert!(content.width >= 50, "content width {} should be >= 50", content.width);
+
+        // Check that vscrollbar exists and has height matching content
+        let vscrollbar = layout.get("vscrollbar").expect("vscrollbar rect should exist");
+        assert_eq!(vscrollbar.height, content.height, "vscrollbar height should match content height");
+        assert_eq!(vscrollbar.width, 1, "vscrollbar width should be 1");
+
+        // Check title bar is at top
+        let title_bar = layout.get("title_bar").expect("title_bar rect should exist");
+        assert_eq!(title_bar.y, 5, "title_bar should be at dialog top");
+        assert_eq!(title_bar.height, 1, "title_bar height should be 1");
+
+        // Check resize_handle exists at bottom border for hit testing
+        let resize_handle = layout.get("resize_handle").expect("resize_handle rect should exist");
+        assert_eq!(resize_handle.width, 2, "resize_handle width should be 2");
+        // resize_handle should be at the bottom of the dialog (y=5+25-1=29)
+        assert_eq!(resize_handle.y, 29, "resize_handle should be at dialog bottom");
+    }
+
+    #[test]
+    fn test_file_dialog_layout() {
+        // Simulate a dialog at position (10, 5) with size 60x18
+        let bounds = Rect::new(10, 5, 60, 18);
+        let layout = compute_layout(&file_dialog_layout(), bounds);
+
+        println!("File dialog layout (60x18 at 10,5):");
+        for (id, rect) in &layout.rects {
+            println!("  {}: {}x{} at ({},{})", id, rect.width, rect.height, rect.x, rect.y);
+        }
+
+        // Check title bar
+        let title_bar = layout.get("title_bar").expect("title_bar rect should exist");
+        assert_eq!(title_bar.y, 5, "title_bar should be at dialog top");
+
+        // Check files_list has reasonable height
+        let files_list = layout.get("files_list").expect("files_list rect should exist");
+        assert!(files_list.height >= 3, "files_list height {} should be >= 3", files_list.height);
+    }
 }

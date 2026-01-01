@@ -40,6 +40,28 @@ pub struct HelpLink {
     pub target: String,
 }
 
+/// Text styling type
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TextStyle {
+    Bold,
+    Italic,
+    Code,
+    CodeBlock,
+}
+
+/// A styled span in the document
+#[derive(Clone, Debug)]
+pub struct StyleSpan {
+    /// Line number (0-indexed in rendered output)
+    pub line: usize,
+    /// Column start
+    pub col_start: usize,
+    /// Column end
+    pub col_end: usize,
+    /// Style to apply
+    pub style: TextStyle,
+}
+
 /// Help system state
 pub struct HelpSystem {
     /// Loaded help documents
@@ -48,12 +70,14 @@ pub struct HelpSystem {
     pub history: Vec<String>,
     /// Current topic
     pub current_topic: String,
-    /// Scroll position
+    /// Vertical scroll position
     pub scroll: usize,
+    /// Horizontal scroll position
+    pub scroll_col: usize,
     /// Selected link index
     pub selected_link: usize,
-    /// Rendered lines cache
-    rendered_cache: Option<(String, Vec<String>, Vec<HelpLink>)>,
+    /// Rendered lines cache (topic, lines, links, styles, max_line_width)
+    rendered_cache: Option<(String, Vec<String>, Vec<HelpLink>, Vec<StyleSpan>, usize)>,
 }
 
 impl HelpSystem {
@@ -63,6 +87,7 @@ impl HelpSystem {
             history: Vec::new(),
             current_topic: String::new(),
             scroll: 0,
+            scroll_col: 0,
             selected_link: 0,
             rendered_cache: None,
         }
@@ -124,6 +149,7 @@ impl HelpSystem {
         }
         self.current_topic = topic_lower;
         self.scroll = 0;
+        self.scroll_col = 0;
         self.selected_link = 0;
         self.rendered_cache = None;
     }
@@ -133,6 +159,7 @@ impl HelpSystem {
         if let Some(prev) = self.history.pop() {
             self.current_topic = prev;
             self.scroll = 0;
+            self.scroll_col = 0;
             self.selected_link = 0;
             self.rendered_cache = None;
             true
@@ -147,22 +174,24 @@ impl HelpSystem {
             .or_else(|| self.documents.get("index"))
     }
 
-    /// Render current document to lines and collect links
-    pub fn render(&mut self, width: usize) -> (Vec<String>, Vec<HelpLink>) {
+    /// Render current document to lines and collect links and styles
+    /// Returns (lines, links, styles, max_line_width)
+    pub fn render(&mut self, width: usize) -> (Vec<String>, Vec<HelpLink>, Vec<StyleSpan>, usize) {
         // Check cache
-        if let Some((ref cached_topic, ref lines, ref links)) = self.rendered_cache {
+        if let Some((ref cached_topic, ref lines, ref links, ref styles, max_width)) = self.rendered_cache {
             if cached_topic == &self.current_topic {
-                return (lines.clone(), links.clone());
+                return (lines.clone(), links.clone(), styles.clone(), max_width);
             }
         }
 
         let doc = match self.current_document() {
             Some(d) => d.clone(),
-            None => return (vec!["Help topic not found.".to_string()], vec![]),
+            None => return (vec!["Help topic not found.".to_string()], vec![], vec![], 25),
         };
 
         let mut lines = Vec::new();
         let mut links = Vec::new();
+        let mut styles = Vec::new();
 
         for element in &doc.elements {
             match element {
@@ -182,16 +211,26 @@ impl HelpSystem {
                     }
                 }
                 HelpElement::Paragraph(text) => {
-                    // Parse links and render
-                    let (rendered, para_links) = render_paragraph_with_links(text, lines.len(), width);
+                    // Parse links and render with styles
+                    let (rendered, para_links, para_styles) = render_paragraph_with_links(text, lines.len(), width);
                     for line in rendered {
                         lines.push(line);
                     }
                     links.extend(para_links);
+                    styles.extend(para_styles);
                 }
                 HelpElement::Code(code) => {
-                    for line in code.lines() {
-                        lines.push(format!("  {}", line));
+                    // Add code block with styling
+                    let code_start_line = lines.len();
+                    for (i, line) in code.lines().enumerate() {
+                        let formatted = format!("  {}", line);
+                        styles.push(StyleSpan {
+                            line: code_start_line + i,
+                            col_start: 0,
+                            col_end: formatted.len(),
+                            style: TextStyle::CodeBlock,
+                        });
+                        lines.push(formatted);
                     }
                     lines.push(String::new());
                 }
@@ -235,13 +274,16 @@ impl HelpSystem {
             }
         }
 
-        self.rendered_cache = Some((self.current_topic.clone(), lines.clone(), links.clone()));
-        (lines, links)
+        // Calculate max line width for horizontal scrolling
+        let max_width = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+
+        self.rendered_cache = Some((self.current_topic.clone(), lines.clone(), links.clone(), styles.clone(), max_width));
+        (lines, links, styles, max_width)
     }
 
     /// Get link at selected index
     pub fn selected_link(&self) -> Option<&HelpLink> {
-        if let Some((_, _, ref links)) = self.rendered_cache {
+        if let Some((_, _, ref links, _, _)) = self.rendered_cache {
             links.get(self.selected_link)
         } else {
             None
@@ -250,7 +292,7 @@ impl HelpSystem {
 
     /// Get total number of links
     pub fn link_count(&self) -> usize {
-        if let Some((_, _, ref links)) = self.rendered_cache {
+        if let Some((_, _, ref links, _, _)) = self.rendered_cache {
             links.len()
         } else {
             0
@@ -361,18 +403,23 @@ fn parse_markdown(content: &str) -> HelpDocument {
             continue;
         }
 
-        // List item - treat as paragraph for now
-        let line = if line.starts_with("- ") {
-            format!("  {} {}", '\u{2022}', &line[2..]) // bullet point
-        } else {
-            line.to_string()
-        };
+        // List item - each bullet is its own line
+        if line.starts_with("- ") {
+            // Flush any pending paragraph first
+            if !para_buffer.is_empty() {
+                elements.push(HelpElement::Paragraph(para_buffer.trim().to_string()));
+                para_buffer.clear();
+            }
+            // Add bullet as its own paragraph
+            elements.push(HelpElement::Paragraph(format!("  • {}", &line[2..])));
+            continue;
+        }
 
         // Accumulate paragraph
         if !para_buffer.is_empty() {
             para_buffer.push(' ');
         }
-        para_buffer.push_str(&line);
+        para_buffer.push_str(line);
     }
 
     // Flush remaining content
@@ -390,22 +437,21 @@ fn parse_markdown(content: &str) -> HelpDocument {
     }
 }
 
-/// Render a paragraph with markdown links, returning lines and link positions
-fn render_paragraph_with_links(text: &str, start_line: usize, width: usize) -> (Vec<String>, Vec<HelpLink>) {
+/// Render a paragraph with markdown links, returning lines, link positions, and styles
+fn render_paragraph_with_links(text: &str, start_line: usize, width: usize) -> (Vec<String>, Vec<HelpLink>, Vec<StyleSpan>) {
     let mut result_lines = Vec::new();
     let mut links = Vec::new();
+    let mut styles = Vec::new();
     let mut current_line = String::new();
     let mut line_num = start_line;
     let mut col = 0;
 
-    // Simple word wrapping with link detection
     let mut i = 0;
     let chars: Vec<char> = text.chars().collect();
 
     while i < chars.len() {
         // Check for markdown link [text](target)
         if chars[i] == '[' {
-            // Find the closing bracket and parentheses
             let mut j = i + 1;
             let mut link_text = String::new();
             while j < chars.len() && chars[j] != ']' {
@@ -420,10 +466,8 @@ fn render_paragraph_with_links(text: &str, start_line: usize, width: usize) -> (
                     k += 1;
                 }
                 if k < chars.len() && chars[k] == ')' {
-                    // Valid link found - render with triangle arrows
                     let display = format!("◄{}►", link_text);
 
-                    // Check if we need to wrap
                     if col + display.chars().count() > width && !current_line.is_empty() {
                         result_lines.push(current_line);
                         current_line = String::new();
@@ -447,6 +491,35 @@ fn render_paragraph_with_links(text: &str, start_line: usize, width: usize) -> (
             }
         }
 
+        // Check for inline code `text`
+        if chars[i] == '`' && (i + 1 >= chars.len() || chars[i + 1] != '`') {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != '`' {
+                j += 1;
+            }
+            if j < chars.len() {
+                let code_start_col = col;
+                for k in (i + 1)..j {
+                    if col >= width {
+                        result_lines.push(current_line);
+                        current_line = String::new();
+                        line_num += 1;
+                        col = 0;
+                    }
+                    current_line.push(chars[k]);
+                    col += 1;
+                }
+                styles.push(StyleSpan {
+                    line: line_num,
+                    col_start: code_start_col,
+                    col_end: col,
+                    style: TextStyle::Code,
+                });
+                i = j + 1;
+                continue;
+            }
+        }
+
         // Check for bold **text**
         if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
             let mut j = i + 2;
@@ -454,7 +527,7 @@ fn render_paragraph_with_links(text: &str, start_line: usize, width: usize) -> (
                 j += 1;
             }
             if j + 1 < chars.len() {
-                // Just render the text without the asterisks
+                let bold_start_col = col;
                 for k in (i + 2)..j {
                     if col >= width {
                         result_lines.push(current_line);
@@ -465,12 +538,48 @@ fn render_paragraph_with_links(text: &str, start_line: usize, width: usize) -> (
                     current_line.push(chars[k]);
                     col += 1;
                 }
+                styles.push(StyleSpan {
+                    line: line_num,
+                    col_start: bold_start_col,
+                    col_end: col,
+                    style: TextStyle::Bold,
+                });
                 i = j + 2;
                 continue;
             }
         }
 
-        // Regular character
+        // Check for italic *text* or _text_
+        if (chars[i] == '*' || chars[i] == '_') && (i + 1 < chars.len() && chars[i + 1] != chars[i]) {
+            let delim = chars[i];
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != delim {
+                j += 1;
+            }
+            if j < chars.len() && j > i + 1 {
+                let italic_start_col = col;
+                for k in (i + 1)..j {
+                    if col >= width {
+                        result_lines.push(current_line);
+                        current_line = String::new();
+                        line_num += 1;
+                        col = 0;
+                    }
+                    current_line.push(chars[k]);
+                    col += 1;
+                }
+                styles.push(StyleSpan {
+                    line: line_num,
+                    col_start: italic_start_col,
+                    col_end: col,
+                    style: TextStyle::Italic,
+                });
+                i = j + 1;
+                continue;
+            }
+        }
+
+        // Regular character - word wrap at spaces
         if col >= width && chars[i] == ' ' {
             result_lines.push(current_line);
             current_line = String::new();
@@ -481,7 +590,6 @@ fn render_paragraph_with_links(text: &str, start_line: usize, width: usize) -> (
         }
 
         if col >= width {
-            // Hard wrap if needed
             result_lines.push(current_line);
             current_line = String::new();
             line_num += 1;
@@ -497,7 +605,7 @@ fn render_paragraph_with_links(text: &str, start_line: usize, width: usize) -> (
         result_lines.push(current_line);
     }
 
-    (result_lines, links)
+    (result_lines, links, styles)
 }
 
 // Embedded help content as fallback

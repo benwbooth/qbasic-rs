@@ -4,6 +4,7 @@ use crate::screen::Screen;
 use crate::terminal::Color;
 use crate::state::{AppState, EditorMode};
 use super::layout::Rect;
+use super::scrollbar::{self, ScrollbarState, ScrollbarColors};
 
 /// BASIC keywords for syntax highlighting
 const KEYWORDS: &[&str] = &[
@@ -1224,61 +1225,31 @@ impl Editor {
         let width = bounds.width;
         let height = bounds.height;
 
+        let colors = ScrollbarColors::default();
+
         // Vertical scrollbar on right edge (inside border)
-        let scrollbar_col = col + width - 1;
-        let scrollbar_height = height.saturating_sub(2);
+        let vscroll_col = col + width - 1;
+        let vscroll_start = row + 1;
+        let vscroll_end = row + height - 2;
 
-        // Draw scrollbar track
-        for r in 1..=scrollbar_height {
-            screen.set(row + r, scrollbar_col, '░', Color::LightGray, Color::Blue);
-        }
-
-        // Draw up/down arrows
-        screen.set(row + 1, scrollbar_col, '↑', Color::Black, Color::LightGray);
-        screen.set(row + height - 2, scrollbar_col, '↓', Color::Black, Color::LightGray);
-
-        // Draw scrollbar thumb
-        // Classic scrollbar: can scroll until last line is at top of screen
-        let line_count = self.buffer.line_count().max(1);
-        if scrollbar_height > 4 {
-            let track_size = scrollbar_height.saturating_sub(2) as usize;
-            // thumb_pos maps scroll_row (0..line_count-1) to track position (0..track_size-1)
-            let thumb_pos = if line_count > 1 {
-                (self.scroll_row.min(line_count - 1) * track_size.saturating_sub(1)) / (line_count - 1)
-            } else {
-                0
-            };
-            let thumb_row = row + 2 + thumb_pos as u16;
-            screen.set(thumb_row, scrollbar_col, '█', Color::Black, Color::Blue);
-        }
+        let vstate = ScrollbarState::new(
+            self.scroll_row,
+            self.buffer.line_count(),
+            self.visible_lines,
+        );
+        scrollbar::draw_vertical(screen, vscroll_col, vscroll_start, vscroll_end, &vstate, &colors);
 
         // Horizontal scrollbar on bottom edge (inside border)
-        let scrollbar_row = row + height - 1;
-        let scrollbar_width = width.saturating_sub(2);
+        let hscroll_row = row + height - 1;
+        let hscroll_start = col + 1;
+        let hscroll_end = col + width - 2;
 
-        // Draw scrollbar track
-        for c in 1..scrollbar_width {
-            screen.set(scrollbar_row, col + c, '░', Color::LightGray, Color::Blue);
-        }
-
-        // Draw left/right arrows
-        screen.set(scrollbar_row, col + 1, '←', Color::Black, Color::LightGray);
-        screen.set(scrollbar_row, col + width - 2, '→', Color::Black, Color::LightGray);
-
-        // Draw horizontal scrollbar thumb
-        // Classic scrollbar: can scroll until end of longest line is at left of screen
-        let max_line_len = self.buffer.max_line_length().max(1);
-        if scrollbar_width > 4 {
-            let track_size = scrollbar_width.saturating_sub(2) as usize;
-            // thumb_pos maps scroll_col (0..max_line_len-1) to track position (0..track_size-1)
-            let thumb_pos = if max_line_len > 1 {
-                (self.scroll_col.min(max_line_len - 1) * track_size.saturating_sub(1)) / (max_line_len - 1)
-            } else {
-                0
-            };
-            let thumb_col = col + 2 + thumb_pos as u16;
-            screen.set(scrollbar_row, thumb_col, '█', Color::Black, Color::Blue);
-        }
+        let hstate = ScrollbarState::new(
+            self.scroll_col,
+            self.buffer.max_line_length(),
+            self.visible_cols,
+        );
+        scrollbar::draw_horizontal(screen, hscroll_row, hscroll_start, hscroll_end, &hstate, &colors);
     }
 
     fn draw_line(&self, screen: &mut Screen, row: u16, col: u16, width: u16, line: &str, state: &AppState, line_num: usize) {
@@ -2180,7 +2151,7 @@ impl Default for Editor {
 
 /// Token types for syntax highlighting
 #[derive(Clone, Copy, Debug)]
-enum TokenKind {
+pub enum TokenKind {
     Keyword,
     String,
     Number,
@@ -2191,13 +2162,13 @@ enum TokenKind {
     Whitespace,
 }
 
-struct Token<'a> {
-    kind: TokenKind,
-    text: &'a str,
+pub struct Token<'a> {
+    pub kind: TokenKind,
+    pub text: &'a str,
 }
 
 /// Simple tokenizer for BASIC syntax highlighting
-fn tokenize_line(line: &str) -> Vec<Token<'_>> {
+pub fn tokenize_line(line: &str) -> Vec<Token<'_>> {
     let mut tokens = Vec::new();
     let chars: Vec<char> = line.chars().collect();
     let mut i = 0;

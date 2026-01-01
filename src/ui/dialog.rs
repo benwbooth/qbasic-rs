@@ -100,7 +100,12 @@ impl Dialog {
 
         // Cache layout for hit testing
         let layout_item = LayoutItem::vstack(vec![
-            LayoutItem::leaf("title_bar").fixed_height(1),
+            // Title bar with window controls
+            LayoutItem::hstack(vec![
+                LayoutItem::leaf("title_bar").width(Size::Flex(1)),
+                LayoutItem::leaf("maximize").fixed_width(3),
+                LayoutItem::leaf("close").fixed_width(3),
+            ]).fixed_height(1),
             LayoutItem::spacer().height(Size::Flex(1)),
             LayoutItem::hstack(vec![
                 LayoutItem::spacer(),
@@ -108,6 +113,11 @@ impl Dialog {
                 LayoutItem::spacer(),
             ]).fixed_height(1),
             LayoutItem::spacer().fixed_height(1),
+            // Resize handle
+            LayoutItem::hstack(vec![
+                LayoutItem::spacer(),
+                LayoutItem::leaf("resize_handle").fixed_width(2),
+            ]).fixed_height(1),
         ]);
         let bounds = Rect::new(x, y, width, height);
         state.dialog_layout = Some(compute_layout(&layout_item, bounds));
@@ -132,7 +142,12 @@ impl Dialog {
 
         // Cache layout for hit testing
         let layout_item = LayoutItem::vstack(vec![
-            LayoutItem::leaf("title_bar").fixed_height(1),
+            // Title bar with window controls
+            LayoutItem::hstack(vec![
+                LayoutItem::leaf("title_bar").width(Size::Flex(1)),
+                LayoutItem::leaf("maximize").fixed_width(3),
+                LayoutItem::leaf("close").fixed_width(3),
+            ]).fixed_height(1),
             LayoutItem::spacer().height(Size::Flex(1)),
             LayoutItem::hstack(vec![
                 LayoutItem::spacer(),
@@ -140,6 +155,11 @@ impl Dialog {
                 LayoutItem::spacer(),
             ]).fixed_height(1),
             LayoutItem::spacer().fixed_height(1),
+            // Resize handle
+            LayoutItem::hstack(vec![
+                LayoutItem::spacer(),
+                LayoutItem::leaf("resize_handle").fixed_width(2),
+            ]).fixed_height(1),
         ]);
         let bounds = Rect::new(x, y, width, height);
         state.dialog_layout = Some(compute_layout(&layout_item, bounds));
@@ -165,7 +185,12 @@ impl Dialog {
 
         // Cache layout for hit testing
         let layout_item = LayoutItem::vstack(vec![
-            LayoutItem::leaf("title_bar").fixed_height(1),
+            // Title bar with window controls
+            LayoutItem::hstack(vec![
+                LayoutItem::leaf("title_bar").width(Size::Flex(1)),
+                LayoutItem::leaf("maximize").fixed_width(3),
+                LayoutItem::leaf("close").fixed_width(3),
+            ]).fixed_height(1),
             LayoutItem::spacer().height(Size::Flex(1)),
             LayoutItem::hstack(vec![
                 LayoutItem::spacer().fixed_width(5),
@@ -177,6 +202,11 @@ impl Dialog {
                 LayoutItem::spacer(),
             ]).fixed_height(1),
             LayoutItem::spacer().fixed_height(1),
+            // Resize handle
+            LayoutItem::hstack(vec![
+                LayoutItem::spacer(),
+                LayoutItem::leaf("resize_handle").fixed_width(2),
+            ]).fixed_height(1),
         ]);
         let bounds = Rect::new(x, y, width, height);
         state.dialog_layout = Some(compute_layout(&layout_item, bounds));
@@ -563,7 +593,12 @@ impl Dialog {
 
         // Cache layout for hit testing
         let layout_item = LayoutItem::vstack(vec![
-            LayoutItem::leaf("title_bar").fixed_height(1),
+            // Title bar with window controls
+            LayoutItem::hstack(vec![
+                LayoutItem::leaf("title_bar").width(Size::Flex(1)),
+                LayoutItem::leaf("maximize").fixed_width(3),
+                LayoutItem::leaf("close").fixed_width(3),
+            ]).fixed_height(1),
             LayoutItem::spacer().height(Size::Flex(1)),
             LayoutItem::hstack(vec![
                 LayoutItem::spacer(),
@@ -571,6 +606,11 @@ impl Dialog {
                 LayoutItem::spacer(),
             ]).fixed_height(1),
             LayoutItem::spacer().fixed_height(1),
+            // Resize handle
+            LayoutItem::hstack(vec![
+                LayoutItem::spacer(),
+                LayoutItem::leaf("resize_handle").fixed_width(2),
+            ]).fixed_height(1),
         ]);
         let bounds = Rect::new(x, y, width, height);
         state.dialog_layout = Some(compute_layout(&layout_item, bounds));
@@ -593,7 +633,12 @@ impl Dialog {
 
         // Cache layout for hit testing
         let layout_item = LayoutItem::vstack(vec![
-            LayoutItem::leaf("title_bar").fixed_height(1),
+            // Title bar with window controls
+            LayoutItem::hstack(vec![
+                LayoutItem::leaf("title_bar").width(Size::Flex(1)),
+                LayoutItem::leaf("maximize").fixed_width(3),
+                LayoutItem::leaf("close").fixed_width(3),
+            ]).fixed_height(1),
             LayoutItem::spacer().height(Size::Flex(1)),
             LayoutItem::hstack(vec![
                 LayoutItem::spacer().fixed_width(5),
@@ -605,6 +650,11 @@ impl Dialog {
                 LayoutItem::spacer(),
             ]).fixed_height(1),
             LayoutItem::spacer().fixed_height(1),
+            // Resize handle
+            LayoutItem::hstack(vec![
+                LayoutItem::spacer(),
+                LayoutItem::leaf("resize_handle").fixed_width(2),
+            ]).fixed_height(1),
         ]);
         let bounds = Rect::new(x, y, width, height);
         state.dialog_layout = Some(compute_layout(&layout_item, bounds));

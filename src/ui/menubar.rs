@@ -183,9 +183,11 @@ impl MenuBar {
             screen.set(row, x, ' ', fg, bg);
             x += 1;
 
-            // Title with hotkey highlighting
+            // Title with hotkey highlighting (first match only)
+            let mut hotkey_highlighted = false;
             for (j, ch) in menu.title.chars().enumerate() {
-                let ch_fg = if ch.to_ascii_lowercase() == menu.hotkey.to_ascii_lowercase() {
+                let ch_fg = if !hotkey_highlighted && ch.to_ascii_lowercase() == menu.hotkey.to_ascii_lowercase() {
+                    hotkey_highlighted = true;
                     Color::White
                 } else {
                     fg

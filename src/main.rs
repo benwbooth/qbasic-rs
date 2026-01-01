@@ -16,7 +16,8 @@ use terminal::{Terminal, Color};
 use screen::Screen;
 use input::InputEvent;
 use state::{AppState, Focus, RunState, DialogType};
-use ui::{MenuBar, Editor, StatusBar, ImmediateWindow, OutputWindow, Dialog, Rect, compute_layout, file_dialog_layout};
+use ui::{MenuBar, Editor, StatusBar, ImmediateWindow, OutputWindow, Dialog, Rect, compute_layout, file_dialog_layout, tokenize_line, TokenKind};
+use ui::scrollbar::{self, ScrollbarState, ScrollbarColors};
 use ui::layout::main_screen_layout;
 use ui::menubar::MenuAction;
 use basic::{Lexer, Parser, Interpreter};
@@ -298,6 +299,32 @@ impl App {
                 self.state.mouse_col = *col;
             }
             _ => {}
+        }
+
+        // If help dialog is open, route scroll events and content-area clicks to it
+        // But don't intercept if we're already dragging/resizing the dialog
+        if self.state.focus == Focus::Dialog && matches!(self.state.dialog, DialogType::Help(_))
+            && !self.state.dialog_dragging && !self.state.dialog_resizing
+        {
+            match &event {
+                InputEvent::ScrollUp { .. } | InputEvent::ScrollDown { .. } => {
+                    return self.handle_help_dialog_input(&event);
+                }
+                InputEvent::MouseClick { row, col } | InputEvent::MouseDrag { row, col } => {
+                    // Route clicks in content, vscrollbar, or hscrollbar to help dialog handler
+                    // Let title bar/resize clicks go to normal handler
+                    if let Some(layout) = self.state.dialog_layout.as_ref() {
+                        let in_content = layout.get("content").map_or(false, |r| r.contains(*row, *col));
+                        let in_vscroll = layout.get("vscrollbar").map_or(false, |r| r.contains(*row, *col));
+                        let in_hscroll = layout.get("hscrollbar").map_or(false, |r| r.contains(*row, *col));
+
+                        if in_content || in_vscroll || in_hscroll {
+                            return self.handle_help_dialog_input(&event);
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
 
         // Handle mouse events
@@ -859,6 +886,17 @@ impl App {
                     self.help.selected_link = (self.help.selected_link + 1) % count;
                 }
             }
+            InputEvent::ShiftTab => {
+                // Previous link
+                let count = self.help.link_count();
+                if count > 0 {
+                    self.help.selected_link = if self.help.selected_link == 0 {
+                        count - 1
+                    } else {
+                        self.help.selected_link - 1
+                    };
+                }
+            }
             InputEvent::CursorUp => {
                 if self.help.scroll > 0 {
                     self.help.scroll -= 1;
@@ -866,6 +904,14 @@ impl App {
             }
             InputEvent::CursorDown => {
                 self.help.scroll += 1;
+            }
+            InputEvent::CursorLeft => {
+                if self.help.scroll_col > 0 {
+                    self.help.scroll_col -= 1;
+                }
+            }
+            InputEvent::CursorRight => {
+                self.help.scroll_col += 1;
             }
             InputEvent::PageUp => {
                 self.help.scroll = self.help.scroll.saturating_sub(10);
@@ -875,70 +921,139 @@ impl App {
             }
             InputEvent::Home => {
                 self.help.scroll = 0;
+                self.help.scroll_col = 0;
             }
             InputEvent::End => {
                 // Scroll to end - we'll clamp in render
                 self.help.scroll = usize::MAX / 2;
             }
-            InputEvent::MouseClick { row, col, .. } => {
-                if let Some(content_rect) = self.state.dialog_layout.as_ref().and_then(|l| l.get("content")) {
-                    let content_height = content_rect.height as usize;
-                    let content_width = (content_rect.width.saturating_sub(1)) as usize;
-                    let scrollbar_col = content_rect.x + content_rect.width - 1;
+            InputEvent::MouseClick { row, col, .. } | InputEvent::MouseDrag { row, col, .. } => {
+                let layout = self.state.dialog_layout.clone();
 
-                    // Check if click is on the scrollbar
-                    if *col == scrollbar_col && *row >= content_rect.y && *row < content_rect.y + content_rect.height {
-                        // Calculate scroll position from click position
-                        let (lines, _) = self.help.render(content_width);
-                        let max_scroll = lines.len().saturating_sub(content_height);
-                        if max_scroll > 0 && content_height > 0 {
-                            let click_offset = (*row - content_rect.y) as usize;
-                            self.help.scroll = (click_offset * max_scroll) / content_height.saturating_sub(1).max(1);
+                // Handle vertical scrollbar click
+                if let Some(vscroll_rect) = layout.as_ref().and_then(|l| l.get("vscrollbar")) {
+                    if *col >= vscroll_rect.x && *col < vscroll_rect.x + vscroll_rect.width
+                        && *row >= vscroll_rect.y && *row < vscroll_rect.y + vscroll_rect.height
+                    {
+                        if let Some(content_rect) = layout.as_ref().and_then(|l| l.get("content")) {
+                            let content_width = content_rect.width as usize;
+                            let content_height = content_rect.height as usize;
+                            let (lines, _, _, _) = self.help.render(content_width);
+                            // Use visible_size=1 for scroll-past-end behavior
+                            let vstate = ScrollbarState::new(self.help.scroll, lines.len(), 1);
+
+                            let action = scrollbar::handle_vscroll_click(
+                                *row,
+                                vscroll_rect.y,
+                                vscroll_rect.y + vscroll_rect.height.saturating_sub(1),
+                                &vstate,
+                                content_height,
+                            );
+
+                            match action {
+                                scrollbar::ScrollAction::ScrollBack(n) => {
+                                    self.help.scroll = self.help.scroll.saturating_sub(n);
+                                }
+                                scrollbar::ScrollAction::ScrollForward(n) => {
+                                    self.help.scroll += n;
+                                }
+                                scrollbar::ScrollAction::PageBack => {
+                                    self.help.scroll = self.help.scroll.saturating_sub(content_height);
+                                }
+                                scrollbar::ScrollAction::PageForward => {
+                                    self.help.scroll += content_height;
+                                }
+                                scrollbar::ScrollAction::StartDrag | scrollbar::ScrollAction::SetPosition(_) => {
+                                    // Handle drag - calculate position from row
+                                    let new_pos = scrollbar::drag_to_vscroll(
+                                        *row,
+                                        vscroll_rect.y,
+                                        vscroll_rect.y + vscroll_rect.height.saturating_sub(1),
+                                        &vstate,
+                                    );
+                                    self.help.scroll = new_pos;
+                                }
+                                scrollbar::ScrollAction::None => {}
+                            }
+                            return true;
                         }
-                        return true;
                     }
+                }
 
-                    // Check if click is on a link
-                    if *row >= content_rect.y && *row < content_rect.y + content_rect.height {
-                        let line_idx = self.help.scroll + (*row - content_rect.y) as usize;
-                        let click_col = (*col - content_rect.x) as usize;
+                // Handle horizontal scrollbar click
+                if let Some(hscroll_rect) = layout.as_ref().and_then(|l| l.get("hscrollbar")) {
+                    if *row == hscroll_rect.y && *col >= hscroll_rect.x && *col < hscroll_rect.x + hscroll_rect.width {
+                        if let Some(content_rect) = layout.as_ref().and_then(|l| l.get("content")) {
+                            let content_width = content_rect.width as usize;
+                            let (_, _, _, max_width) = self.help.render(content_width);
+                            // Use visible_size=1 for scroll-past-end behavior
+                            let hstate = ScrollbarState::new(self.help.scroll_col, max_width, 1);
 
-                        // Get links and check if click is on one
-                        let (_, links) = self.help.render(content_width);
-                        for link in &links {
-                            if link.line == line_idx && click_col >= link.col_start && click_col < link.col_end {
-                                self.help.navigate_to(&link.target);
-                                return true;
+                            let action = scrollbar::handle_hscroll_click(
+                                *col,
+                                hscroll_rect.x,
+                                hscroll_rect.x + hscroll_rect.width.saturating_sub(1),
+                                &hstate,
+                                content_width,
+                            );
+
+                            match action {
+                                scrollbar::ScrollAction::ScrollBack(n) => {
+                                    self.help.scroll_col = self.help.scroll_col.saturating_sub(n);
+                                }
+                                scrollbar::ScrollAction::ScrollForward(n) => {
+                                    self.help.scroll_col += n;
+                                }
+                                scrollbar::ScrollAction::PageBack => {
+                                    self.help.scroll_col = self.help.scroll_col.saturating_sub(content_width);
+                                }
+                                scrollbar::ScrollAction::PageForward => {
+                                    self.help.scroll_col += content_width;
+                                }
+                                scrollbar::ScrollAction::StartDrag | scrollbar::ScrollAction::SetPosition(_) => {
+                                    let new_pos = scrollbar::drag_to_hscroll(
+                                        *col,
+                                        hscroll_rect.x,
+                                        hscroll_rect.x + hscroll_rect.width.saturating_sub(1),
+                                        &hstate,
+                                    );
+                                    self.help.scroll_col = new_pos;
+                                }
+                                scrollbar::ScrollAction::None => {}
+                            }
+                            return true;
+                        }
+                    }
+                }
+
+                // Check if click is on a link (only for MouseClick, not drag)
+                if matches!(event, InputEvent::MouseClick { .. }) {
+                    if let Some(content_rect) = layout.as_ref().and_then(|l| l.get("content")) {
+                        if *row >= content_rect.y && *row < content_rect.y + content_rect.height
+                            && *col >= content_rect.x && *col < content_rect.x + content_rect.width
+                        {
+                            let content_width = content_rect.width as usize;
+                            let line_idx = self.help.scroll + (*row - content_rect.y) as usize;
+                            let click_col = self.help.scroll_col + (*col - content_rect.x) as usize;
+
+                            // Get links and check if click is on one
+                            let (_, links, _, _) = self.help.render(content_width);
+
+                            for link in &links {
+                                if link.line == line_idx && click_col >= link.col_start && click_col < link.col_end {
+                                    self.help.navigate_to(&link.target);
+                                    return true;
+                                }
                             }
                         }
                     }
                 }
             }
-            InputEvent::MouseDrag { row, col, .. } => {
-                // Handle scrollbar dragging
-                if let Some(content_rect) = self.state.dialog_layout.as_ref().and_then(|l| l.get("content")) {
-                    let content_height = content_rect.height as usize;
-                    let content_width = (content_rect.width.saturating_sub(1)) as usize;
-                    let scrollbar_col = content_rect.x + content_rect.width - 1;
-
-                    if *col == scrollbar_col && *row >= content_rect.y && *row < content_rect.y + content_rect.height {
-                        let (lines, _) = self.help.render(content_width);
-                        let max_scroll = lines.len().saturating_sub(content_height);
-                        if max_scroll > 0 && content_height > 0 {
-                            let click_offset = (*row - content_rect.y) as usize;
-                            self.help.scroll = (click_offset * max_scroll) / content_height.saturating_sub(1).max(1);
-                        }
-                        return true;
-                    }
-                }
-            }
             InputEvent::ScrollUp { .. } => {
-                if self.help.scroll > 0 {
-                    self.help.scroll -= 1;
-                }
+                self.help.scroll = self.help.scroll.saturating_sub(3);
             }
             InputEvent::ScrollDown { .. } => {
-                self.help.scroll += 1;
+                self.help.scroll += 3;
             }
             _ => {}
         }
@@ -972,20 +1087,37 @@ impl App {
             self.screen.write_str(rect.y, title_x, &title_str, Color::Cyan, Color::Black);
         }
 
+        // Draw maximize button (↓ = restore, ↑ = maximize)
+        if let Some(rect) = layout.get("maximize") {
+            let is_maximized = self.state.dialog_saved_bounds.is_some();
+            let btn = if is_maximized { "[↓]" } else { "[↑]" };
+            self.screen.write_str(rect.y, rect.x, btn, Color::LightGray, Color::Black);
+        }
+
         // Get content area from layout
         if let Some(content_rect) = layout.get("content") {
-            let content_width = (content_rect.width.saturating_sub(1)) as usize; // Leave room for scrollbar
+            let content_width = content_rect.width as usize;
             let content_height = content_rect.height as usize;
 
-            // Get rendered content
-            let (lines, links) = self.help.render(content_width);
+            // Get rendered content (lines, links, styles, max_line_width)
+            let (lines, links, styles, max_width) = self.help.render(content_width);
 
-            // Clamp scroll to valid range
-            let max_scroll = lines.len().saturating_sub(content_height);
-            if self.help.scroll > max_scroll {
-                self.help.scroll = max_scroll;
+            // Clamp vertical scroll to valid range
+            // Allow scrolling until only the last line is visible at the top
+            let max_vscroll = lines.len().saturating_sub(1);
+            if self.help.scroll > max_vscroll {
+                self.help.scroll = max_vscroll;
             }
+
+            // Clamp horizontal scroll to valid range
+            // Allow scrolling until only the last column is visible at the left
+            let max_hscroll = max_width.saturating_sub(1);
+            if self.help.scroll_col > max_hscroll {
+                self.help.scroll_col = max_hscroll;
+            }
+
             let scroll = self.help.scroll;
+            let scroll_col = self.help.scroll_col;
             let selected_link = self.help.selected_link;
 
             // Draw each visible line
@@ -994,71 +1126,129 @@ impl App {
                 let col = content_rect.x;
                 let line_idx = scroll + i;
 
-                // Collect characters from the line for safe indexing
-                let chars: Vec<char> = line.chars().collect();
-
                 // Find all links on this line
                 let line_links: Vec<_> = links.iter().enumerate()
                     .filter(|(_, link)| link.line == line_idx)
                     .collect();
 
-                // Draw character by character
-                for (char_pos, ch) in chars.iter().enumerate() {
-                    if char_pos >= content_width {
-                        break;
-                    }
+                // Find all styles on this line
+                let line_styles: Vec<_> = styles.iter()
+                    .filter(|s| s.line == line_idx)
+                    .collect();
 
-                    // Check if this position is inside a link
-                    let mut in_link = false;
-                    let mut is_selected = false;
+                // Check if this line is a code block (for syntax highlighting)
+                let is_code_block = line_styles.iter().any(|s| s.style == help::TextStyle::CodeBlock);
 
-                    for (link_idx, link) in &line_links {
-                        if char_pos >= link.col_start && char_pos < link.col_end {
-                            in_link = true;
-                            is_selected = *link_idx == selected_link;
-                            break;
+                if is_code_block && line_links.is_empty() {
+                    // Use syntax highlighting for code blocks
+                    let tokens = tokenize_line(line);
+                    let mut x = 0usize;
+
+                    for token in tokens {
+                        let token_fg = match token.kind {
+                            TokenKind::Keyword => Color::White,
+                            TokenKind::String => Color::LightMagenta,
+                            TokenKind::Number => Color::LightCyan,
+                            TokenKind::Comment => Color::LightGray,
+                            TokenKind::Operator => Color::LightGreen,
+                            TokenKind::Identifier => Color::Yellow,
+                            TokenKind::Punctuation => Color::White,
+                            TokenKind::Whitespace => Color::Yellow,
+                        };
+
+                        for ch in token.text.chars() {
+                            if x >= scroll_col && x - scroll_col < content_width {
+                                let screen_x = col + (x - scroll_col) as u16;
+                                self.screen.set(row, screen_x, ch, token_fg, Color::Black);
+                            }
+                            x += 1;
                         }
                     }
 
-                    let (fg, bg) = if in_link {
-                        if is_selected {
-                            (Color::White, Color::Cyan) // Selected link
+                    // Fill remaining space with background
+                    for screen_pos in x.saturating_sub(scroll_col)..content_width {
+                        self.screen.set(row, col + screen_pos as u16, ' ', Color::Yellow, Color::Black);
+                    }
+                } else {
+                    // Regular rendering with styles and links
+                    let chars: Vec<char> = line.chars().collect();
+
+                    for screen_pos in 0..content_width {
+                        let char_pos = scroll_col + screen_pos;
+                        let ch = chars.get(char_pos).copied().unwrap_or(' ');
+
+                        // Check if this position is inside a link
+                        let mut in_link = false;
+                        let mut is_selected = false;
+
+                        for (link_idx, link) in &line_links {
+                            if char_pos >= link.col_start && char_pos < link.col_end {
+                                in_link = true;
+                                is_selected = *link_idx == selected_link;
+                                break;
+                            }
+                        }
+
+                        // Check for style at this position
+                        let mut style = None;
+                        for s in &line_styles {
+                            if char_pos >= s.col_start && char_pos < s.col_end {
+                                style = Some(s.style);
+                                break;
+                            }
+                        }
+
+                        let (fg, bg) = if in_link {
+                            if is_selected {
+                                (Color::White, Color::Cyan) // Selected link
+                            } else {
+                                (Color::Green, Color::Black) // Normal link in green
+                            }
                         } else {
-                            (Color::Green, Color::Black) // Normal link in green
-                        }
-                    } else {
-                        (Color::LightGray, Color::Black) // Normal text
-                    };
+                            match style {
+                                Some(help::TextStyle::Code) => (Color::Yellow, Color::Black),
+                                Some(help::TextStyle::CodeBlock) => (Color::Yellow, Color::Black),
+                                Some(help::TextStyle::Bold) => (Color::White, Color::Black),
+                                Some(help::TextStyle::Italic) => (Color::Cyan, Color::Black),
+                                None => (Color::LightGray, Color::Black),
+                            }
+                        };
 
-                    self.screen.set(row, col + char_pos as u16, *ch, fg, bg);
+                        self.screen.set(row, col + screen_pos as u16, ch, fg, bg);
+                    }
                 }
             }
 
             // Draw vertical scrollbar
-            let scrollbar_col = content_rect.x + content_rect.width - 1;
-            if lines.len() > content_height && content_height > 0 {
-                // Draw scrollbar track
-                for i in 0..content_height {
-                    let row = content_rect.y + i as u16;
-                    self.screen.set(row, scrollbar_col, '░', Color::DarkGray, Color::Black);
-                }
-
-                // Calculate thumb position and size
-                let thumb_size = ((content_height * content_height) / lines.len().max(1)).max(1).min(content_height);
-                let thumb_pos = if max_scroll > 0 {
-                    (scroll * (content_height - thumb_size)) / max_scroll
-                } else {
-                    0
-                };
-
-                // Draw thumb
-                for i in 0..thumb_size {
-                    let row = content_rect.y + (thumb_pos + i) as u16;
-                    if row < content_rect.y + content_height as u16 {
-                        self.screen.set(row, scrollbar_col, '█', Color::Cyan, Color::Black);
-                    }
-                }
+            // Use visible_size=1 to match scroll-past-end behavior (max_scroll = content - 1)
+            if let Some(vscroll_rect) = layout.get("vscrollbar") {
+                let vstate = ScrollbarState::new(scroll, lines.len(), 1);
+                let colors = ScrollbarColors::dark();
+                scrollbar::draw_vertical(
+                    &mut self.screen,
+                    vscroll_rect.x,
+                    vscroll_rect.y,
+                    vscroll_rect.y + vscroll_rect.height.saturating_sub(1),
+                    &vstate,
+                    &colors,
+                );
             }
+
+            // Draw horizontal scrollbar
+            // Use visible_size=1 to match scroll-past-end behavior (max_scroll = content - 1)
+            if let Some(hscroll_rect) = layout.get("hscrollbar") {
+                let hstate = ScrollbarState::new(scroll_col, max_width, 1);
+                let colors = ScrollbarColors::dark();
+                scrollbar::draw_horizontal(
+                    &mut self.screen,
+                    hscroll_rect.y,
+                    hscroll_rect.x,
+                    hscroll_rect.x + hscroll_rect.width.saturating_sub(1),
+                    &hstate,
+                    &colors,
+                );
+            }
+
         }
 
         // Draw navigation bar
@@ -1192,8 +1382,37 @@ impl App {
                             return true;
                         }
                         "title_bar" => {
-                            self.state.dialog_dragging = true;
-                            self.state.dialog_drag_offset = (col - dialog_x, row - dialog_y);
+                            // Check for double-click to toggle maximize
+                            let now = std::time::Instant::now();
+                            let elapsed = now.duration_since(self.state.last_click_time);
+                            let same_row = self.state.last_click_pos.0 == row;
+                            let is_double_click = same_row && elapsed.as_millis() < 400;
+
+                            self.state.last_click_time = now;
+                            self.state.last_click_pos = (row, col);
+
+                            if is_double_click {
+                                // Toggle maximize
+                                let (screen_width, screen_height) = self.screen.size();
+                                if let Some((x, y, w, h)) = self.state.dialog_saved_bounds {
+                                    self.state.dialog_x = x;
+                                    self.state.dialog_y = y;
+                                    self.state.dialog_width = w;
+                                    self.state.dialog_height = h;
+                                    self.state.dialog_saved_bounds = None;
+                                } else {
+                                    self.state.dialog_saved_bounds = Some((
+                                        dialog_x, dialog_y, dialog_width, dialog_height,
+                                    ));
+                                    self.state.dialog_x = 1;
+                                    self.state.dialog_y = 2;
+                                    self.state.dialog_width = screen_width - 2;
+                                    self.state.dialog_height = screen_height - 3;
+                                }
+                            } else {
+                                self.state.dialog_dragging = true;
+                                self.state.dialog_drag_offset = (col - dialog_x, row - dialog_y);
+                            }
                             return true;
                         }
                         "resize_handle" => {
@@ -1277,51 +1496,77 @@ impl App {
                 return true;
             }
 
-            // Non-file dialogs: use cached dialog layout for hit testing
-            // Check window controls on title bar
-            if row == dialog_y {
-                // Close button [X] (right side)
-                if col >= dialog_x + dialog_width - 4 && col < dialog_x + dialog_width - 1 {
-                    self.state.close_dialog();
-                    return true;
-                }
-                // Maximize button (next to close)
-                if col >= dialog_x + dialog_width - 8 && col < dialog_x + dialog_width - 5 {
-                    let (screen_width, screen_height) = self.screen.size();
-                    if let Some((x, y, w, h)) = self.state.dialog_saved_bounds {
-                        self.state.dialog_x = x;
-                        self.state.dialog_y = y;
-                        self.state.dialog_width = w;
-                        self.state.dialog_height = h;
-                        self.state.dialog_saved_bounds = None;
-                    } else {
-                        self.state.dialog_saved_bounds = Some((dialog_x, dialog_y, dialog_width, dialog_height));
-                        self.state.dialog_x = 1;
-                        self.state.dialog_y = 2;
-                        self.state.dialog_width = screen_width - 2;
-                        self.state.dialog_height = screen_height - 3;
-                    }
-                    return true;
-                }
-                // Title bar (for dragging) - everything else on title bar row
-                if col >= dialog_x && col < dialog_x + dialog_width - 8 {
-                    self.state.dialog_dragging = true;
-                    self.state.dialog_drag_offset = (col - dialog_x, row - dialog_y);
-                    return true;
-                }
-            }
-
-            // Check resize handle (bottom-right corner)
-            if row >= dialog_y + dialog_height - 2 && col >= dialog_x + dialog_width - 2 {
-                self.state.dialog_resizing = true;
-                return true;
-            }
-
-            // Use cached dialog layout for button hit testing
+            // Non-file dialogs: use cached dialog layout for all hit testing
             let dialog_layout = self.state.dialog_layout.clone();
             if let Some(layout) = dialog_layout {
                 if let Some(hit_id) = layout.hit_test(row, col) {
-                    return self.handle_dialog_button_click(&hit_id);
+                    match hit_id.as_str() {
+                        "close" => {
+                            self.state.close_dialog();
+                            return true;
+                        }
+                        "maximize" => {
+                            let (screen_width, screen_height) = self.screen.size();
+                            if let Some((x, y, w, h)) = self.state.dialog_saved_bounds {
+                                self.state.dialog_x = x;
+                                self.state.dialog_y = y;
+                                self.state.dialog_width = w;
+                                self.state.dialog_height = h;
+                                self.state.dialog_saved_bounds = None;
+                            } else {
+                                self.state.dialog_saved_bounds = Some((
+                                    dialog_x, dialog_y, dialog_width, dialog_height,
+                                ));
+                                self.state.dialog_x = 1;
+                                self.state.dialog_y = 2;
+                                self.state.dialog_width = screen_width - 2;
+                                self.state.dialog_height = screen_height - 3;
+                            }
+                            return true;
+                        }
+                        "title_bar" => {
+                            // Check for double-click to toggle maximize
+                            let now = std::time::Instant::now();
+                            let elapsed = now.duration_since(self.state.last_click_time);
+                            let same_row = self.state.last_click_pos.0 == row;
+                            let is_double_click = same_row && elapsed.as_millis() < 400;
+
+                            self.state.last_click_time = now;
+                            self.state.last_click_pos = (row, col);
+
+                            if is_double_click {
+                                // Toggle maximize
+                                let (screen_width, screen_height) = self.screen.size();
+                                if let Some((x, y, w, h)) = self.state.dialog_saved_bounds {
+                                    self.state.dialog_x = x;
+                                    self.state.dialog_y = y;
+                                    self.state.dialog_width = w;
+                                    self.state.dialog_height = h;
+                                    self.state.dialog_saved_bounds = None;
+                                } else {
+                                    self.state.dialog_saved_bounds = Some((
+                                        dialog_x, dialog_y, dialog_width, dialog_height,
+                                    ));
+                                    self.state.dialog_x = 1;
+                                    self.state.dialog_y = 2;
+                                    self.state.dialog_width = screen_width - 2;
+                                    self.state.dialog_height = screen_height - 3;
+                                }
+                            } else {
+                                self.state.dialog_dragging = true;
+                                self.state.dialog_drag_offset = (col - dialog_x, row - dialog_y);
+                            }
+                            return true;
+                        }
+                        "resize_handle" => {
+                            self.state.dialog_resizing = true;
+                            return true;
+                        }
+                        _ => {
+                            // Handle button clicks
+                            return self.handle_dialog_button_click(&hit_id);
+                        }
+                    }
                 }
             }
 
