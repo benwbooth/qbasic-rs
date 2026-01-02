@@ -1,4 +1,5 @@
 //! Sixel graphics encoder for terminal output
+#![allow(dead_code)]
 //!
 //! Converts a pixel buffer with 16-color palette to sixel format
 //! for display in terminals that support sixel graphics.

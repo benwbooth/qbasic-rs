@@ -371,13 +371,13 @@ pub fn file_dialog_layout() -> LayoutItem {
 
             // Labels row
             LayoutItem::hstack(vec![
-                LayoutItem::leaf("files_label").width(Size::Flex(1)),
+                LayoutItem::leaf("files_label").width(Size::Flex(2)),
                 LayoutItem::leaf("dirs_label").width(Size::Flex(1)),
             ]).fixed_height(1).spacing(2),
 
-            // Lists row (flexible height)
+            // Lists row (flexible height) - files 66%, dirs 33%
             LayoutItem::hstack(vec![
-                LayoutItem::leaf("files_list").width(Size::Flex(1)).height(Size::Flex(1)).min_size(10, 3),
+                LayoutItem::leaf("files_list").width(Size::Flex(2)).height(Size::Flex(1)).min_size(10, 3),
                 LayoutItem::leaf("dirs_list").width(Size::Flex(1)).height(Size::Flex(1)).min_size(10, 3),
             ]).height(Size::Flex(1)).spacing(2),
 

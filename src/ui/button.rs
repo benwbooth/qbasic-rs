@@ -1,4 +1,5 @@
 //! Button widget - a clickable button
+#![allow(dead_code)]
 
 use crate::input::InputEvent;
 use crate::screen::Screen;

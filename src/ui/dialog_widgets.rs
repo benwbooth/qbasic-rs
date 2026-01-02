@@ -1,4 +1,5 @@
 //! Dialog widget system
+#![allow(dead_code)]
 //!
 //! This module provides widget-based dialog handling, replacing the ad-hoc
 //! event handling in main.rs with a proper component-based system.

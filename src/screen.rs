@@ -1,4 +1,5 @@
 //! Double-buffered screen rendering system
+#![allow(dead_code)]
 //! Minimizes flicker by only updating changed cells
 
 use crate::terminal::{Color, Terminal, CursorStyle};

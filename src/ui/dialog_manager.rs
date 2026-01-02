@@ -1,16 +1,15 @@
 //! Dialog Manager - bridges widget system with AppState
+#![allow(dead_code)]
 //!
 //! This module manages dialog widgets and synchronizes their state
 //! with AppState for integration with the existing main.rs code.
 
 use crate::input::InputEvent;
 use crate::state::{AppState, DialogType};
-use crate::screen::Screen;
 use super::layout::{Rect, ComputedLayout, compute_layout};
 use super::layout::{find_dialog_layout, replace_dialog_layout, goto_line_dialog_layout, simple_input_dialog_layout};
 use super::widget::EventResult;
-use super::dialog_widgets::{CompositeDialog, DialogField, create_find_dialog, create_replace_dialog, create_goto_dialog, create_simple_input_dialog};
-use super::file_dialog_widgets::{handle_file_list_click, FileListAction};
+use super::dialog_widgets::{CompositeDialog, create_find_dialog, create_replace_dialog, create_goto_dialog, create_simple_input_dialog};
 
 /// Actions that can be triggered by dialogs
 #[derive(Debug, Clone, PartialEq)]
@@ -41,16 +40,6 @@ pub enum DialogAction {
     ToggleCase,
     /// Toggle whole word matching
     ToggleWholeWord,
-    /// File selected in file dialog
-    FileSelected(usize),
-    /// File activated (double-click) in file dialog
-    FileActivated(usize),
-    /// Directory selected
-    DirSelected(usize),
-    /// Directory activated (double-click)
-    DirActivated(usize),
-    /// Open file confirmed
-    FileDialogOk,
 }
 
 /// Manages dialog widgets and their state
@@ -238,7 +227,7 @@ impl DialogManager {
     }
 
     /// Handle an event and return the action
-    pub fn handle_event(&mut self, event: &InputEvent, state: &AppState) -> DialogAction {
+    pub fn handle_event(&mut self, event: &InputEvent, _state: &AppState) -> DialogAction {
         // Handle escape key globally
         if matches!(event, InputEvent::Escape) {
             return DialogAction::Cancel;
@@ -260,11 +249,6 @@ impl DialogManager {
             }
         }
 
-        // Handle file dialog events
-        if matches!(state.dialog, DialogType::FileOpen | DialogType::FileSave | DialogType::FileSaveAs) {
-            return self.handle_file_dialog_event(event, state);
-        }
-
         DialogAction::None
     }
 
@@ -283,67 +267,6 @@ impl DialogManager {
             "toggle_whole" => DialogAction::ToggleWholeWord,
             _ => DialogAction::None,
         }
-    }
-
-    /// Handle file dialog specific events
-    fn handle_file_dialog_event(&mut self, event: &InputEvent, state: &AppState) -> DialogAction {
-        // Only handle mouse clicks for file lists
-        if let InputEvent::MouseClick { row, col } = event {
-            let bounds = Rect::new(state.dialog_x, state.dialog_y, state.dialog_width, state.dialog_height);
-            let layout = compute_layout(&super::layout::file_dialog_layout(), bounds);
-
-            // Check files_list
-            if let Some(list_rect) = layout.get("files_list") {
-                if list_rect.contains(*row, *col) {
-                    let (action, _) = handle_file_list_click(
-                        *row, *col, list_rect,
-                        state.dialog_file_index,
-                        state.dialog_files.len(),
-                        state.last_click_time,
-                        state.last_click_pos,
-                    );
-
-                    return match action {
-                        FileListAction::Select(idx) => DialogAction::FileSelected(idx),
-                        FileListAction::Activate(idx) => DialogAction::FileActivated(idx),
-                        _ => DialogAction::None,
-                    };
-                }
-            }
-
-            // Check dirs_list
-            if let Some(list_rect) = layout.get("dirs_list") {
-                if list_rect.contains(*row, *col) {
-                    let (action, _) = handle_file_list_click(
-                        *row, *col, list_rect,
-                        state.dialog_dir_index,
-                        state.dialog_dirs.len(),
-                        state.last_click_time,
-                        state.last_click_pos,
-                    );
-
-                    return match action {
-                        FileListAction::Select(idx) => DialogAction::DirSelected(idx),
-                        FileListAction::Activate(idx) => DialogAction::DirActivated(idx),
-                        _ => DialogAction::None,
-                    };
-                }
-            }
-
-            // Check buttons
-            if let Some(rect) = layout.get("ok_button") {
-                if rect.contains(*row, *col) {
-                    return DialogAction::FileDialogOk;
-                }
-            }
-            if let Some(rect) = layout.get("cancel_button") {
-                if rect.contains(*row, *col) {
-                    return DialogAction::Cancel;
-                }
-            }
-        }
-
-        DialogAction::None
     }
 
     /// Sync widget state back to AppState

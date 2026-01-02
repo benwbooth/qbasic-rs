@@ -1,4 +1,5 @@
 //! BASIC interpreter - executes the AST
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::io::{self, Write};

@@ -1232,10 +1232,11 @@ impl Editor {
         let vscroll_start = row + 1;
         let vscroll_end = row + height - 2;
 
+        // Use visible_size=1 so max_scroll = line_count - 1, matching click handling
         let vstate = ScrollbarState::new(
             self.scroll_row,
             self.buffer.line_count(),
-            self.visible_lines,
+            1,
         );
         scrollbar::draw_vertical(screen, vscroll_col, vscroll_start, vscroll_end, &vstate, &colors);
 
@@ -1244,10 +1245,11 @@ impl Editor {
         let hscroll_start = col + 1;
         let hscroll_end = col + width - 2;
 
+        // Use visible_size=1 so max_scroll = max_line_length - 1, matching click handling
         let hstate = ScrollbarState::new(
             self.scroll_col,
             self.buffer.max_line_length(),
-            self.visible_cols,
+            1,
         );
         scrollbar::draw_horizontal(screen, hscroll_row, hscroll_start, hscroll_end, &hstate, &colors);
     }

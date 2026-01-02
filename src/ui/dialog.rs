@@ -3,8 +3,7 @@
 use crate::screen::Screen;
 use crate::terminal::Color;
 use crate::state::{AppState, DialogType};
-use super::layout::{Rect, LayoutItem, Size, compute_layout, file_dialog_layout, find_dialog_layout, replace_dialog_layout, goto_line_dialog_layout, print_dialog_layout, welcome_dialog_layout, simple_input_dialog_layout, display_options_dialog_layout};
-use super::scrollbar::{ScrollbarState, ScrollbarColors, draw_vertical};
+use super::layout::{Rect, LayoutItem, Size, compute_layout, find_dialog_layout, replace_dialog_layout, goto_line_dialog_layout, print_dialog_layout, welcome_dialog_layout, simple_input_dialog_layout, display_options_dialog_layout};
 
 /// Dialog component
 pub struct Dialog;
@@ -19,8 +18,8 @@ impl Dialog {
             DialogType::About => Self::draw_about(screen, state, width, height, selected),
             DialogType::Message { title, text } => Self::draw_message(screen, state, width, height, title, text, selected),
             DialogType::Confirm { title, text } => Self::draw_confirm(screen, state, width, height, title, text, selected),
-            DialogType::FileOpen => Self::draw_file_dialog(screen, state, width, height, "Open", selected),
-            DialogType::FileSave | DialogType::FileSaveAs => Self::draw_file_dialog(screen, state, width, height, "Save As", selected),
+            // File dialogs are now handled by the modal FileDialog widget
+            DialogType::FileOpen | DialogType::FileSave | DialogType::FileSaveAs => {}
             DialogType::Find => Self::draw_find_dialog(screen, state, width, height, selected),
             DialogType::Replace => Self::draw_replace_dialog(screen, state, width, height, selected),
             DialogType::GoToLine => Self::draw_goto_dialog(screen, state, width, height, selected),
@@ -213,173 +212,7 @@ impl Dialog {
         state.dialog_layout = Some(compute_layout(&layout_item, bounds));
     }
 
-    pub fn draw_file_dialog(screen: &mut Screen, state: &AppState, _screen_width: u16, _screen_height: u16, title: &str, _selected: usize) {
-        let x = state.dialog_x;
-        let y = state.dialog_y;
-        let width = state.dialog_width;
-        let height = state.dialog_height;
-
-        // Compute layout for the full dialog
-        let bounds = Rect::new(x, y, width, height);
-        let layout = compute_layout(&file_dialog_layout(), bounds);
-
-        // Draw shadow
-        screen.draw_shadow(y, x, width, height);
-
-        // Draw dialog background
-        screen.fill(y, x, width, height, ' ', Color::Black, Color::LightGray);
-
-        // Draw border
-        screen.draw_box(y, x, width, height, Color::Black, Color::LightGray);
-
-        // Draw title bar (centered title, gray background)
-        if let Some(rect) = layout.get("title_bar") {
-            let title_str = format!(" {} ", title);
-            let title_x = rect.x + (rect.width.saturating_sub(title_str.len() as u16)) / 2;
-            screen.write_str(rect.y, title_x, &title_str, Color::Black, Color::LightGray);
-        }
-
-        // Get current directory from state
-        let cwd = state.dialog_path.to_string_lossy().to_string();
-
-        // Current field: 0=filename, 1=directory, 2=files, 3=dirs, 4=OK, 5=Cancel, 6=Help
-        let current_field = state.dialog_input_field;
-
-        // File name field
-        if let Some(label_rect) = layout.get("filename_label") {
-            let (fg, bg) = if current_field == 0 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
-            screen.write_str(label_rect.y, label_rect.x, "File Name:", fg, bg);
-        }
-        if let Some(field_rect) = layout.get("filename_field") {
-            let (fg, bg) = if current_field == 0 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::LightGray) };
-            screen.fill(field_rect.y, field_rect.x, field_rect.width, 1, ' ', fg, bg);
-            let display = if state.dialog_filename.is_empty() { "*.BAS" } else { &state.dialog_filename };
-            let truncated: String = display.chars().take(field_rect.width as usize).collect();
-            screen.write_str(field_rect.y, field_rect.x, &truncated, fg, bg);
-
-            // Draw cursor if focused
-            if current_field == 0 {
-                let cursor_x = field_rect.x + state.dialog_input_cursor.min(field_rect.width as usize - 1) as u16;
-                let cursor_char = state.dialog_filename.chars().nth(state.dialog_input_cursor).unwrap_or(' ');
-                screen.write_str(field_rect.y, cursor_x, &cursor_char.to_string(), Color::White, Color::Black);
-            }
-        }
-
-        // Directory field (read-only, just shows focus)
-        if let Some(label_rect) = layout.get("directory_label") {
-            let (fg, bg) = if current_field == 1 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
-            screen.write_str(label_rect.y, label_rect.x, "Directory:", fg, bg);
-        }
-        if let Some(field_rect) = layout.get("directory_field") {
-            let (fg, bg) = if current_field == 1 { (Color::Black, Color::Cyan) } else { (Color::Black, Color::LightGray) };
-            screen.fill(field_rect.y, field_rect.x, field_rect.width, 1, ' ', fg, bg);
-            let max_len = field_rect.width as usize;
-            let dir_display = if cwd.len() > max_len { &cwd[cwd.len()-max_len..] } else { &cwd };
-            screen.write_str(field_rect.y, field_rect.x, dir_display, fg, bg);
-        }
-
-        // Files label and list
-        if let Some(rect) = layout.get("files_label") {
-            let (fg, bg) = if current_field == 2 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
-            screen.write_str(rect.y, rect.x, "Files:", fg, bg);
-        }
-        if let Some(list_rect) = layout.get("files_list") {
-            let box_fg = if current_field == 2 { Color::Black } else { Color::Black };
-            let box_bg = if current_field == 2 { Color::Cyan } else { Color::LightGray };
-            screen.draw_box(list_rect.y, list_rect.x, list_rect.width, list_rect.height, box_fg, box_bg);
-            let max_items = list_rect.height.saturating_sub(2) as usize;
-            let item_width = list_rect.width.saturating_sub(2) as usize;
-
-            // Calculate scroll offset to keep selected item visible
-            let scroll_offset = if state.dialog_file_index >= max_items {
-                state.dialog_file_index - max_items + 1
-            } else {
-                0
-            };
-
-            for (i, file) in state.dialog_files.iter().skip(scroll_offset).take(max_items).enumerate() {
-                let actual_index = scroll_offset + i;
-                let is_selected = actual_index == state.dialog_file_index;
-                let fg = if is_selected { Color::White } else { Color::Black };
-                let bg = if is_selected { Color::Cyan } else { Color::LightGray };
-                let display: String = if file.len() > item_width {
-                    file[..item_width].to_string()
-                } else {
-                    format!("{:<width$}", file, width = item_width)
-                };
-                screen.write_str(list_rect.y + 1 + i as u16, list_rect.x + 1, &display, fg, bg);
-            }
-
-            // Draw scrollbar if there are more files than visible
-            if state.dialog_files.len() > max_items {
-                let scrollbar_state = ScrollbarState::new(
-                    state.dialog_file_index,
-                    state.dialog_files.len(),
-                    max_items,
-                );
-                let colors = ScrollbarColors::default();
-                let scrollbar_col = list_rect.x + list_rect.width - 1;
-                draw_vertical(screen, scrollbar_col, list_rect.y + 1, list_rect.y + list_rect.height - 2, &scrollbar_state, &colors);
-            }
-        }
-
-        // Directories label and list
-        if let Some(rect) = layout.get("dirs_label") {
-            let (fg, bg) = if current_field == 3 { (Color::White, Color::Black) } else { (Color::Black, Color::LightGray) };
-            screen.write_str(rect.y, rect.x, "Dirs/Drives:", fg, bg);
-        }
-        if let Some(list_rect) = layout.get("dirs_list") {
-            let box_fg = if current_field == 3 { Color::Black } else { Color::Black };
-            let box_bg = if current_field == 3 { Color::Cyan } else { Color::LightGray };
-            screen.draw_box(list_rect.y, list_rect.x, list_rect.width, list_rect.height, box_fg, box_bg);
-            let max_items = list_rect.height.saturating_sub(2) as usize;
-            let item_width = list_rect.width.saturating_sub(2) as usize;
-
-            // Calculate scroll offset to keep selected item visible
-            let scroll_offset = if state.dialog_dir_index >= max_items {
-                state.dialog_dir_index - max_items + 1
-            } else {
-                0
-            };
-
-            for (i, dir) in state.dialog_dirs.iter().skip(scroll_offset).take(max_items).enumerate() {
-                let actual_index = scroll_offset + i;
-                let is_selected = actual_index == state.dialog_dir_index;
-                let fg = if is_selected { Color::White } else { Color::Black };
-                let bg = if is_selected { Color::Cyan } else { Color::LightGray };
-                let display_name = format!("[{}]", dir);
-                let display: String = if display_name.len() > item_width {
-                    display_name[..item_width].to_string()
-                } else {
-                    format!("{:<width$}", display_name, width = item_width)
-                };
-                screen.write_str(list_rect.y + 1 + i as u16, list_rect.x + 1, &display, fg, bg);
-            }
-
-            // Draw scrollbar if there are more dirs than visible
-            if state.dialog_dirs.len() > max_items {
-                let scrollbar_state = ScrollbarState::new(
-                    state.dialog_dir_index,
-                    state.dialog_dirs.len(),
-                    max_items,
-                );
-                let colors = ScrollbarColors::default();
-                let scrollbar_col = list_rect.x + list_rect.width - 1;
-                draw_vertical(screen, scrollbar_col, list_rect.y + 1, list_rect.y + list_rect.height - 2, &scrollbar_state, &colors);
-            }
-        }
-
-        // Buttons - use current_field to determine selection
-        if let Some(rect) = layout.get("ok_button") {
-            Self::draw_button(screen, rect.y, rect.x, "OK", current_field == 4);
-        }
-        if let Some(rect) = layout.get("cancel_button") {
-            Self::draw_button(screen, rect.y, rect.x, "Cancel", current_field == 5);
-        }
-        if let Some(rect) = layout.get("help_button") {
-            Self::draw_button(screen, rect.y, rect.x, "Help", current_field == 6);
-        }
-    }
+    // draw_file_dialog removed - now handled by modal FileDialog widget
 
     pub fn draw_find_dialog(screen: &mut Screen, state: &AppState, _screen_width: u16, _screen_height: u16, _selected: usize) {
         let x = state.dialog_x;

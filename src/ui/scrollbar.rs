@@ -1,5 +1,7 @@
 //! Shared scrollbar drawing and interaction logic
 
+#![allow(dead_code)]
+
 use crate::screen::Screen;
 use crate::terminal::Color;
 
@@ -34,7 +36,7 @@ impl ScrollbarState {
             return 0;
         }
         // Simple direct mapping: scroll 0 = thumb at 0, scroll max = thumb at end
-        let max_scroll = self.content_size.saturating_sub(1);
+        let max_scroll = self.max_scroll();
         if max_scroll == 0 {
             return 0;
         }

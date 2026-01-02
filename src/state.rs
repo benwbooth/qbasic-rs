@@ -182,21 +182,6 @@ pub struct AppState {
     /// Cursor position within dialog input field
     pub dialog_input_cursor: usize,
 
-    /// Current path for file dialog
-    pub dialog_path: std::path::PathBuf,
-
-    /// Selected file index in file dialog
-    pub dialog_file_index: usize,
-
-    /// Selected dir index in file dialog
-    pub dialog_dir_index: usize,
-
-    /// Cached list of files for file dialog
-    pub dialog_files: Vec<String>,
-
-    /// Cached list of directories for file dialog
-    pub dialog_dirs: Vec<String>,
-
     /// Dialog position (x, y) - top-left corner
     pub dialog_x: u16,
     pub dialog_y: u16,
@@ -216,9 +201,6 @@ pub struct AppState {
 
     /// Saved size for maximize/restore
     pub dialog_saved_bounds: Option<(u16, u16, u16, u16)>, // x, y, width, height
-
-    /// Selected filename in file dialog
-    pub dialog_filename: String,
 
     /// Last click time for multi-click detection
     pub last_click_time: std::time::Instant,
@@ -287,11 +269,6 @@ impl Default for AppState {
             dialog_goto_line: String::new(),
             dialog_input_field: 0,
             dialog_input_cursor: 0,
-            dialog_path: std::env::current_dir().unwrap_or_default(),
-            dialog_file_index: 0,
-            dialog_dir_index: 0,
-            dialog_files: Vec::new(),
-            dialog_dirs: Vec::new(),
             dialog_x: 0,
             dialog_y: 0,
             dialog_width: 0,
@@ -300,7 +277,6 @@ impl Default for AppState {
             dialog_drag_offset: (0, 0),
             dialog_resizing: false,
             dialog_saved_bounds: None,
-            dialog_filename: String::new(),
             last_click_time: std::time::Instant::now(),
             last_click_pos: (0, 0),
             click_count: 0,
@@ -396,58 +372,8 @@ impl AppState {
         self.dialog_y = (screen_height.saturating_sub(height)) / 2;
         self.dialog_dragging = false;
 
-        // Initialize file dialog state
-        if matches!(dialog, DialogType::FileOpen | DialogType::FileSave | DialogType::FileSaveAs) {
-            self.dialog_path = std::env::current_dir().unwrap_or_default();
-            self.dialog_file_index = 0;
-            self.dialog_dir_index = 0;
-            self.refresh_file_dialog();
-        }
-
         self.dialog = dialog;
         self.focus = Focus::Dialog;
-    }
-
-    /// Refresh the file dialog's file and directory lists
-    pub fn refresh_file_dialog(&mut self) {
-        self.dialog_files.clear();
-        self.dialog_dirs.clear();
-
-        // Add parent directory
-        self.dialog_dirs.push("..".to_string());
-
-        if let Ok(entries) = std::fs::read_dir(&self.dialog_path) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                if let Ok(name) = entry.file_name().into_string() {
-                    if entry.path().is_dir() {
-                        self.dialog_dirs.push(name);
-                    } else if name.to_lowercase().ends_with(".bas") {
-                        self.dialog_files.push(name);
-                    }
-                }
-            }
-        }
-
-        self.dialog_files.sort();
-        self.dialog_dirs.sort();
-    }
-
-    /// Navigate to a directory in the file dialog
-    pub fn navigate_to_dir(&mut self, dir_name: &str) {
-        let new_path = if dir_name == ".." {
-            self.dialog_path.parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| self.dialog_path.clone())
-        } else {
-            self.dialog_path.join(dir_name)
-        };
-
-        if new_path.is_dir() {
-            self.dialog_path = new_path;
-            self.dialog_file_index = 0;
-            self.dialog_dir_index = 0;
-            self.refresh_file_dialog();
-        }
     }
 
     /// Close the current dialog

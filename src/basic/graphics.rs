@@ -1,4 +1,5 @@
 //! Graphics mode simulation
+#![allow(dead_code)]
 //!
 //! Supports two rendering backends:
 //! - Sixel graphics for terminals that support it (true pixel graphics)

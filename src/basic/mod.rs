@@ -10,4 +10,3 @@ pub mod sixel;
 pub use lexer::Lexer;
 pub use parser::Parser;
 pub use interpreter::Interpreter;
-pub use sixel::SixelEncoder;

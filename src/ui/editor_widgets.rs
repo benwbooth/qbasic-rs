@@ -1,4 +1,5 @@
 //! Editor widget helpers
+#![allow(dead_code)]
 //!
 //! Provides clean event handling for the editor area, including scrollbars.
 
@@ -54,7 +55,8 @@ pub fn handle_editor_click(
 
     // Check vertical scrollbar
     if col == vscroll_col && row >= vscroll_start && row <= vscroll_end {
-        let state = ScrollbarState::new(scroll_row, line_count, visible_lines);
+        // Use visible_size=1 so max_scroll = line_count - 1, matching drawing and click handling
+        let state = ScrollbarState::new(scroll_row, line_count, 1);
         let action = handle_vscroll_click(row, vscroll_start, vscroll_end, &state, visible_lines);
 
         return match action {
@@ -69,7 +71,8 @@ pub fn handle_editor_click(
 
     // Check horizontal scrollbar
     if row == hscroll_row && col >= hscroll_start && col <= hscroll_end {
-        let state = ScrollbarState::new(scroll_col, max_line_len, visible_cols);
+        // Use visible_size=1 so max_scroll = max_line_len - 1, matching drawing and click handling
+        let state = ScrollbarState::new(scroll_col, max_line_len, 1);
         let action = handle_hscroll_click(col, hscroll_start, hscroll_end, &state, visible_cols);
 
         return match action {

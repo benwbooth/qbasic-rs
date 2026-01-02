@@ -1,4 +1,5 @@
 //! Help system with markdown parsing and navigation
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 

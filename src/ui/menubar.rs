@@ -97,8 +97,8 @@ impl MenuBar {
         Self {
             menus: vec![
                 Menu::new("File", 'F')
-                    .item("New", Some(""))
-                    .item("Open...", Some(""))
+                    .item("New Program", Some(""))
+                    .item("Open Program...", Some(""))
                     .item("Save", Some(""))
                     .item("Save As...", Some(""))
                     .separator()

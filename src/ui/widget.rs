@@ -1,4 +1,5 @@
 //! Widget trait and event system for UI components
+#![allow(dead_code)]
 
 use crate::input::InputEvent;
 use crate::screen::Screen;

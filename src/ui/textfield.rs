@@ -1,4 +1,5 @@
 //! TextField widget - a single-line text input field
+#![allow(dead_code)]
 
 use crate::input::InputEvent;
 use crate::screen::Screen;

@@ -1,4 +1,5 @@
 //! ListView widget - a scrollable list with integrated scrollbar
+#![allow(dead_code)]
 
 use crate::input::InputEvent;
 use crate::screen::Screen;
@@ -51,6 +52,10 @@ pub struct ListView {
     action_prefix: String,
     /// Whether scrollbar is being dragged
     scrollbar_dragging: bool,
+    /// Last click time for double-click detection
+    last_click_time: std::time::Instant,
+    /// Last clicked index for double-click detection
+    last_click_index: Option<usize>,
 }
 
 impl ListView {
@@ -65,6 +70,8 @@ impl ListView {
             focused: false,
             action_prefix: action_prefix.into(),
             scrollbar_dragging: false,
+            last_click_time: std::time::Instant::now(),
+            last_click_index: None,
         }
     }
 
@@ -427,8 +434,21 @@ impl Widget for ListView {
                 let item_idx = self.scroll_offset + visual_idx;
 
                 if item_idx < self.items.len() {
+                    // Check for double-click
+                    let now = std::time::Instant::now();
+                    let elapsed = now.duration_since(self.last_click_time);
+                    let same_item = self.last_click_index == Some(item_idx);
+                    let is_double_click = same_item && elapsed.as_millis() < 400;
+
                     self.selected_index = item_idx;
-                    return EventResult::Action(format!("{}_select", self.action_prefix));
+                    self.last_click_time = now;
+                    self.last_click_index = Some(item_idx);
+
+                    if is_double_click {
+                        return EventResult::Action(format!("{}_activate", self.action_prefix));
+                    } else {
+                        return EventResult::Action(format!("{}_select", self.action_prefix));
+                    }
                 }
             }
         }

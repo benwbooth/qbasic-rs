@@ -1,4 +1,5 @@
 //! Terminal handling with raw ANSI escape sequences
+#![allow(dead_code)]
 //! No external TUI libraries - just raw escape codes
 
 use std::io::{self, Read, Write};

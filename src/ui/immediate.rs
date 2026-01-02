@@ -1,4 +1,5 @@
 //! QBasic Immediate window for direct BASIC expression evaluation
+#![allow(dead_code)]
 
 use crate::screen::Screen;
 use crate::terminal::Color;
@@ -52,8 +53,8 @@ impl ImmediateWindow {
         // Maximize/Minimize button at right of title bar
         let button_x = col + width - 4;
         if state.immediate_maximized {
-            // Show restore/minimize button when maximized (down arrow)
-            screen.write_str(row, button_x, "[↓]", Color::White, Color::Blue);
+            // Show restore button when maximized (vertical up-down arrow)
+            screen.write_str(row, button_x, "[↕]", Color::White, Color::Blue);
         } else {
             // Show maximize button when normal (up arrow)
             screen.write_str(row, button_x, "[↑]", Color::White, Color::Blue);
