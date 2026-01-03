@@ -50,6 +50,10 @@ impl App {
         // Load a sample program
         self.widgets.editor.load(SAMPLE_PROGRAM);
 
+        // Initialize dialog screen size before opening any dialogs
+        let (width, height) = self.terminal.size();
+        self.dialogs.set_screen_size(width, height);
+
         // Show welcome dialog on startup
         let mut ctx = DialogContext {
             editor: &mut self.widgets.editor,

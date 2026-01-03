@@ -9,6 +9,7 @@ use crate::ui::widget_tree::{WidgetNode, WidgetTree};
 use crate::ui::widgets::{Button, HRule, Label, Spacer};
 
 use super::{DialogContext, DialogController, DialogResult};
+use crate::ui::widget::EventResult;
 
 /// Welcome dialog shown on startup
 pub struct WelcomeDialog {
@@ -141,23 +142,22 @@ impl DialogController for WelcomeDialog {
             return DialogResult::Closed;
         }
 
-        // Handle Enter on focused button
-        if matches!(event, InputEvent::Enter) {
-            let focus_path = self.tree.focus_path();
-            if !focus_path.is_empty() {
-                let focused_id = &focus_path[focus_path.len() - 1];
-                if focused_id == "start_btn" {
+        // Route to widget tree and check for button actions
+        let result = self.tree.handle_event(event, self.content_rect());
+        if let EventResult::Action(action) = result {
+            match action.as_str() {
+                "start" => {
                     self.show_help_on_close = true;
                     return DialogResult::Closed;
-                } else if focused_id == "exit_btn" {
+                }
+                "cancel" => {
                     self.show_help_on_close = false;
                     return DialogResult::Closed;
                 }
+                _ => {}
             }
         }
 
-        // Route to widget tree
-        self.tree.handle_event(event, self.content_rect());
         DialogResult::Open
     }
 }
