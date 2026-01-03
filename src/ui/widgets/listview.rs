@@ -4,9 +4,11 @@
 use crate::input::InputEvent;
 use crate::screen::Screen;
 use crate::terminal::Color;
-use super::layout::Rect;
-use super::widget::{Widget, EventResult, mouse_position};
-use super::scrollbar::{ScrollbarColors, ScrollbarState, draw_vertical};
+use crate::ui::layout::{Rect, SizeHint};
+use crate::ui::theme::Theme;
+use crate::ui::widget::{Widget, EventResult, mouse_position};
+use crate::ui::widget_tree::{TreeWidget, EventPhase};
+use crate::ui::scrollbar::{self, ScrollbarColors, ScrollbarState, draw_vertical};
 
 /// Colors for the list view
 #[derive(Clone, Copy)]
@@ -50,6 +52,8 @@ pub struct ListView {
     focused: bool,
     /// Action prefix for events
     action_prefix: String,
+    /// Optional fixed minimum width override (used by widget tree layout)
+    min_width_override: Option<u16>,
     /// Whether scrollbar is being dragged
     scrollbar_dragging: bool,
     /// Last click time for double-click detection
@@ -72,6 +76,7 @@ impl ListView {
             scrollbar_dragging: false,
             last_click_time: std::time::Instant::now(),
             last_click_index: None,
+            min_width_override: None,
         }
     }
 
@@ -88,6 +93,11 @@ impl ListView {
     pub fn with_border(mut self, show_border: bool) -> Self {
         self.show_border = show_border;
         self
+    }
+
+    /// Set a fixed minimum width for layout
+    pub fn set_min_width(&mut self, width: u16) {
+        self.min_width_override = Some(width);
     }
 
     /// Set the list items
@@ -320,7 +330,7 @@ impl Widget for ListView {
                     let start_row = content.y;
                     let end_row = content.y + content.height - 1;
                     let state = ScrollbarState::new(self.scroll_offset, self.items.len(), visible_height);
-                    let new_scroll = super::scrollbar::drag_to_vscroll(*row, start_row, end_row, &state);
+                    let new_scroll = scrollbar::drag_to_vscroll(*row, start_row, end_row, &state);
                     self.scroll_offset = new_scroll;
                     return EventResult::Action(format!("{}_scroll", self.action_prefix));
                 }
@@ -473,12 +483,139 @@ impl Widget for ListView {
         true
     }
 
-    fn has_focus(&self) -> bool {
-        self.focused
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+}
+
+/// TreeWidget implementation for use in widget trees
+/// Uses Theme for colors instead of ListViewColors
+impl TreeWidget for ListView {
+    fn draw(&self, screen: &mut Screen, bounds: Rect, theme: &Theme) {
+        if bounds.width < 3 || bounds.height < 3 {
+            return;
+        }
+
+        // Draw border if enabled using theme colors
+        if self.show_border {
+            let (fg, bg) = (theme.dialog_border_fg, theme.dialog_border_bg);
+
+            // Top border
+            screen.set(bounds.y, bounds.x, '┌', fg, bg);
+            for col in (bounds.x + 1)..(bounds.x + bounds.width - 1) {
+                screen.set(bounds.y, col, '─', fg, bg);
+            }
+            screen.set(bounds.y, bounds.x + bounds.width - 1, '┐', fg, bg);
+
+            // Side borders
+            for row in (bounds.y + 1)..(bounds.y + bounds.height - 1) {
+                screen.set(row, bounds.x, '│', fg, bg);
+                screen.set(row, bounds.x + bounds.width - 1, '│', fg, bg);
+            }
+
+            // Bottom border
+            screen.set(bounds.y + bounds.height - 1, bounds.x, '└', fg, bg);
+            for col in (bounds.x + 1)..(bounds.x + bounds.width - 1) {
+                screen.set(bounds.y + bounds.height - 1, col, '─', fg, bg);
+            }
+            screen.set(bounds.y + bounds.height - 1, bounds.x + bounds.width - 1, '┘', fg, bg);
+        }
+
+        let content = self.content_rect(bounds);
+        let visible_height = content.height as usize;
+        let item_width = content.width.saturating_sub(1) as usize; // Leave room for scrollbar
+
+        // Draw items with theme colors
+        let item_fg = theme.list_fg;
+        let item_bg = theme.list_bg;
+        let selected_fg = if self.focused { theme.list_focused_selected_fg } else { theme.list_selected_fg };
+        let selected_bg = if self.focused { theme.list_focused_selected_bg } else { theme.list_selected_bg };
+
+        for i in 0..visible_height {
+            let item_index = self.scroll_offset + i;
+            let row = content.y + i as u16;
+
+            if item_index < self.items.len() {
+                let item = &self.items[item_index];
+                let is_selected = item_index == self.selected_index;
+                let (fg, bg) = if is_selected {
+                    (selected_fg, selected_bg)
+                } else {
+                    (item_fg, item_bg)
+                };
+
+                // Draw item text (truncated or padded to width)
+                for (j, ch) in item.chars().take(item_width).enumerate() {
+                    screen.set(row, content.x + j as u16, ch, fg, bg);
+                }
+                // Pad remainder
+                for j in item.chars().count()..item_width {
+                    screen.set(row, content.x + j as u16, ' ', fg, bg);
+                }
+            } else {
+                // Empty row
+                for j in 0..item_width {
+                    screen.set(row, content.x + j as u16, ' ', item_fg, item_bg);
+                }
+            }
+        }
+
+        // Draw scrollbar if needed with theme colors
+        if self.items.len() > visible_height {
+            let scrollbar_col = content.x + content.width - 1;
+            let state = ScrollbarState::new(self.scroll_offset, self.items.len(), visible_height);
+            let scrollbar_colors = ScrollbarColors {
+                track_fg: theme.scrollbar_track_fg,
+                track_bg: theme.scrollbar_track_bg,
+                thumb_fg: theme.scrollbar_thumb_fg,
+                thumb_bg: theme.scrollbar_thumb_bg,
+                arrow_fg: theme.scrollbar_track_fg,
+                arrow_bg: theme.scrollbar_track_bg,
+            };
+            draw_vertical(
+                screen,
+                scrollbar_col,
+                content.y,
+                content.y + content.height - 1,
+                &state,
+                &scrollbar_colors,
+            );
+        }
+    }
+
+    fn handle_event(&mut self, event: &InputEvent, bounds: Rect, phase: EventPhase) -> EventResult {
+        if phase != EventPhase::Target {
+            return EventResult::Ignored;
+        }
+        Widget::handle_event(self, event, bounds)
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint {
+            min_width: self.min_width_override.unwrap_or(10),
+            min_height: 3, // Minimum 3 rows (top border, 1 item, bottom border)
+            flex: 1, // Lists can expand
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
     }
 
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
     }
-}
 
+    fn wants_tight_width(&self) -> bool {
+        self.min_width_override.is_some()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}

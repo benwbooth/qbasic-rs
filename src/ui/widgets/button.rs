@@ -4,8 +4,10 @@
 use crate::input::InputEvent;
 use crate::screen::Screen;
 use crate::terminal::Color;
-use super::layout::Rect;
-use super::widget::{Widget, EventResult, mouse_position};
+use crate::ui::layout::{Rect, SizeHint};
+use crate::ui::theme::Theme;
+use crate::ui::widget::{Widget, EventResult, mouse_position};
+use crate::ui::widget_tree::{TreeWidget, EventPhase};
 
 /// Colors for the button
 #[derive(Clone, Copy)]
@@ -43,6 +45,8 @@ pub struct Button {
     action_name: String,
     /// Whether to show angle brackets around label (QBasic style)
     show_brackets: bool,
+    /// Optional fixed width override for layout sizing
+    min_width: Option<u16>,
 }
 
 impl Button {
@@ -53,6 +57,7 @@ impl Button {
             focused: false,
             action_name: action_name.into(),
             show_brackets: true,
+            min_width: None,
         }
     }
 
@@ -64,6 +69,17 @@ impl Button {
     pub fn with_brackets(mut self, show_brackets: bool) -> Self {
         self.show_brackets = show_brackets;
         self
+    }
+
+    /// Set a fixed width for layout sizing
+    pub fn min_width(mut self, width: u16) -> Self {
+        self.min_width = Some(width);
+        self
+    }
+
+    /// Update fixed width at runtime
+    pub fn set_min_width(&mut self, width: u16) {
+        self.min_width = Some(width);
     }
 
     /// Get the label
@@ -167,11 +183,98 @@ impl Widget for Button {
         true
     }
 
-    fn has_focus(&self) -> bool {
-        self.focused
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+}
+
+/// TreeWidget implementation for use in widget trees
+/// Uses Theme for colors instead of ButtonColors
+impl TreeWidget for Button {
+    fn draw(&self, screen: &mut Screen, bounds: Rect, theme: &Theme) {
+        if bounds.width == 0 || bounds.height == 0 {
+            return;
+        }
+
+        let (text_fg, text_bg) = if self.focused {
+            (theme.button_focused_fg, theme.button_focused_bg)
+        } else {
+            (theme.button_fg, theme.button_bg)
+        };
+
+        let bracket_fg = text_fg;
+        let bracket_bg = text_bg;
+
+        let mut col = bounds.x;
+        let row = bounds.y;
+
+        if self.show_brackets {
+            // Draw opening bracket
+            if col < bounds.x + bounds.width {
+                screen.set(row, col, '<', bracket_fg, bracket_bg);
+                col += 1;
+            }
+            if col < bounds.x + bounds.width {
+                screen.set(row, col, ' ', text_fg, text_bg);
+                col += 1;
+            }
+        }
+
+        // Draw label
+        for ch in self.label.chars() {
+            if col >= bounds.x + bounds.width {
+                break;
+            }
+            screen.set(row, col, ch, text_fg, text_bg);
+            col += 1;
+        }
+
+        if self.show_brackets {
+            if col < bounds.x + bounds.width {
+                screen.set(row, col, ' ', text_fg, text_bg);
+                col += 1;
+            }
+            // Draw closing bracket
+            if col < bounds.x + bounds.width {
+                screen.set(row, col, '>', bracket_fg, bracket_bg);
+            }
+        }
+    }
+
+    fn handle_event(&mut self, event: &InputEvent, bounds: Rect, phase: EventPhase) -> EventResult {
+        if phase != EventPhase::Target {
+            return EventResult::Ignored;
+        }
+        Widget::handle_event(self, event, bounds)
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        let display_width = self.display_width() as u16;
+        let min_width = self.min_width.unwrap_or(display_width);
+        SizeHint {
+            min_width,
+            min_height: 1,
+            flex: 0,
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
     }
 
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
+    }
+
+    fn wants_tight_width(&self) -> bool {
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }

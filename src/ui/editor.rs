@@ -5,6 +5,7 @@ use crate::terminal::Color;
 use crate::state::{AppState, EditorMode};
 use super::layout::Rect;
 use super::scrollbar::{self, ScrollbarState, ScrollbarColors};
+use super::window_chrome;
 
 /// BASIC keywords for syntax highlighting
 const KEYWORDS: &[&str] = &[
@@ -307,6 +308,11 @@ pub struct Editor {
     pub redo_stack: Vec<UndoAction>,
     pub visible_lines: usize,  // Number of visible lines (for PageUp/PageDown)
     pub visible_cols: usize,   // Number of visible columns
+    // Multi-click tracking
+    last_click_time: std::time::Instant,
+    last_click_pos: (u16, u16),
+    click_count: usize,
+    selection_anchor: Option<((usize, usize), (usize, usize))>,
 }
 
 impl Editor {
@@ -325,6 +331,10 @@ impl Editor {
             redo_stack: Vec::new(),
             visible_lines: 20,  // Default, updated in draw()
             visible_cols: 80,   // Default, updated in draw()
+            last_click_time: std::time::Instant::now(),
+            last_click_pos: (0, 0),
+            click_count: 0,
+            selection_anchor: None,
         }
     }
 
@@ -1210,10 +1220,17 @@ impl Editor {
         // Draw border
         screen.draw_box(row, col, width, height, Color::LightGray, Color::Blue);
 
-        // Draw title bar with filename - inverted colors
+        // Draw title (inverted colors: Blue on LightGray)
         let title = format!(" {} ", state.title());
-        let title_x = col + (width.saturating_sub(title.len() as u16)) / 2;
+        let title_x = col + (width.saturating_sub(title.len() as u16 + window_chrome::MAXIMIZE_BUTTON_OFFSET)) / 2;
         screen.write_str(row, title_x, &title, Color::Blue, Color::LightGray);
+
+        // Draw maximize button (border colors: LightGray on Blue)
+        window_chrome::draw_maximize_button(
+            screen, row, col, width,
+            state.editor_maximized,
+            Color::LightGray, Color::Blue,
+        );
 
         // Draw scroll bars
         self.draw_scrollbars(screen, bounds);
@@ -2273,4 +2290,293 @@ pub fn tokenize_line(line: &str) -> Vec<Token<'_>> {
     }
 
     tokens
+}
+
+// Implement MainWidget trait
+use super::main_widget::{MainWidget, WidgetAction, event_in_bounds};
+use super::editor_widgets::{handle_editor_click, EditorClickAction};
+use super::scrollbar::ScrollAction;
+use crate::state::Focus;
+
+impl MainWidget for Editor {
+    fn id(&self) -> &'static str {
+        "editor"
+    }
+
+    fn draw(&mut self, screen: &mut Screen, state: &AppState, bounds: Rect) {
+        Editor::draw(self, screen, state, bounds);
+    }
+
+    fn handle_event(&mut self, event: &crate::input::InputEvent, state: &mut AppState, bounds: Rect) -> WidgetAction {
+        use crate::input::InputEvent;
+
+        // Handle mouse clicks in bounds
+        if let InputEvent::MouseClick { row, col } = event {
+            if !event_in_bounds(event, bounds) {
+                return WidgetAction::Ignored;
+            }
+
+            // Focus the editor
+            state.focus = Focus::Editor;
+
+            // Use editor_widgets for hit testing
+            let line_count = self.buffer.line_count().max(1);
+            let max_line_len = self.buffer.max_line_length().max(1);
+
+            let action = handle_editor_click(
+                *row, *col, bounds,
+                self.scroll_row,
+                self.scroll_col,
+                line_count,
+                max_line_len,
+                self.visible_lines,
+                self.visible_cols,
+            );
+
+            return match action {
+                EditorClickAction::VScroll(scroll_action) => {
+                    let page_size = self.visible_lines.max(1);
+                    let max_scroll = line_count.saturating_sub(1);
+
+                    match scroll_action {
+                        ScrollAction::ScrollBack(n) => {
+                            self.scroll_row = self.scroll_row.saturating_sub(n);
+                        }
+                        ScrollAction::ScrollForward(n) => {
+                            self.scroll_row = (self.scroll_row + n).min(max_scroll);
+                        }
+                        ScrollAction::PageBack => {
+                            self.scroll_row = self.scroll_row.saturating_sub(page_size);
+                        }
+                        ScrollAction::PageForward => {
+                            self.scroll_row = (self.scroll_row + page_size).min(max_scroll);
+                        }
+                        ScrollAction::SetPosition(pos) => {
+                            self.scroll_row = pos.min(max_scroll);
+                        }
+                        _ => {}
+                    }
+                    WidgetAction::Consumed
+                }
+                EditorClickAction::StartVDrag => {
+                    WidgetAction::StartDrag("vscroll")
+                }
+                EditorClickAction::HScroll(scroll_action) => {
+                    let page_size = self.visible_cols.max(1);
+                    let max_scroll = max_line_len.saturating_sub(1);
+
+                    match scroll_action {
+                        ScrollAction::ScrollBack(n) => {
+                            self.scroll_col = self.scroll_col.saturating_sub(n);
+                        }
+                        ScrollAction::ScrollForward(n) => {
+                            self.scroll_col = (self.scroll_col + n).min(max_scroll);
+                        }
+                        ScrollAction::PageBack => {
+                            self.scroll_col = self.scroll_col.saturating_sub(page_size);
+                        }
+                        ScrollAction::PageForward => {
+                            self.scroll_col = (self.scroll_col + page_size).min(max_scroll);
+                        }
+                        ScrollAction::SetPosition(pos) => {
+                            self.scroll_col = pos.min(max_scroll);
+                        }
+                        _ => {}
+                    }
+                    WidgetAction::Consumed
+                }
+                EditorClickAction::StartHDrag => {
+                    WidgetAction::StartDrag("hscroll")
+                }
+                EditorClickAction::ContentClick { editor_y, editor_x } => {
+                    // Set cursor position
+                    let target_line = self.scroll_row + editor_y;
+                    let target_col = self.scroll_col + editor_x;
+
+                    if target_line < self.buffer.line_count() {
+                        self.cursor_line = target_line;
+                        let line_len = self.buffer.line(target_line).map(|l| l.len()).unwrap_or(0);
+                        self.cursor_col = target_col.min(line_len);
+                    }
+
+                    // Multi-click detection
+                    let now = std::time::Instant::now();
+                    let elapsed = now.duration_since(self.last_click_time);
+                    let same_pos = self.last_click_pos == (*row, *col);
+                    let is_quick_click = elapsed.as_millis() < 400;
+
+                    if same_pos && is_quick_click {
+                        self.click_count = (self.click_count + 1).min(4);
+                    } else {
+                        self.click_count = 1;
+                    }
+
+                    self.last_click_time = now;
+                    self.last_click_pos = (*row, *col);
+
+                    // Handle based on click count
+                    match self.click_count {
+                        2 => {
+                            self.select_word();
+                            self.is_selecting = true;
+                            self.selection_anchor = self.get_selection_bounds();
+                        }
+                        3 => {
+                            self.select_line();
+                            self.is_selecting = true;
+                            self.selection_anchor = self.get_selection_bounds();
+                        }
+                        4 => {
+                            self.select_paragraph();
+                            self.is_selecting = true;
+                            self.selection_anchor = self.get_selection_bounds();
+                        }
+                        _ => {
+                            self.start_selection();
+                            self.selection_anchor = None;
+                        }
+                    }
+                    WidgetAction::Consumed
+                }
+                EditorClickAction::MaximizeToggle | EditorClickAction::TitleBarDoubleClick => {
+                    WidgetAction::Toggle("editor_maximized")
+                }
+                EditorClickAction::None => WidgetAction::Consumed, // Border click
+            };
+        }
+
+        // Handle mouse drag
+        if let InputEvent::MouseDrag { row, col } = event {
+            // Handle vertical scrollbar drag
+            if state.vscroll_dragging {
+                let editor_row = bounds.y + 1;
+                let editor_height = bounds.height;
+                let hscroll_row = editor_row + editor_height - 1;
+                let vscroll_start = editor_row + 1;
+                let vscroll_end = hscroll_row - 1;
+                let track_height = vscroll_end.saturating_sub(vscroll_start).saturating_sub(1) as usize;
+
+                if track_height > 1 {
+                    let line_count = self.buffer.line_count().max(1);
+                    let max_scroll = line_count.saturating_sub(1);
+                    let track_pos = row.saturating_sub(vscroll_start + 1) as usize;
+                    let new_scroll = if max_scroll > 0 {
+                        (track_pos * max_scroll) / track_height.saturating_sub(1)
+                    } else {
+                        0
+                    };
+                    self.scroll_row = new_scroll.min(max_scroll);
+                }
+                return WidgetAction::Consumed;
+            }
+
+            // Handle horizontal scrollbar drag
+            if state.hscroll_dragging {
+                let editor_col = bounds.x + 1;
+                let editor_width = bounds.width;
+                let vscroll_col = editor_col + editor_width - 1;
+                let hscroll_start = editor_col + 1;
+                let hscroll_end = vscroll_col - 1;
+                let track_width = hscroll_end.saturating_sub(hscroll_start).saturating_sub(1) as usize;
+
+                if track_width > 1 {
+                    let max_line_len = self.buffer.max_line_length().max(1);
+                    let max_scroll = max_line_len.saturating_sub(1);
+                    let track_pos = col.saturating_sub(hscroll_start + 1) as usize;
+                    let new_scroll = if max_scroll > 0 {
+                        (track_pos * max_scroll) / track_width.saturating_sub(1)
+                    } else {
+                        0
+                    };
+                    self.scroll_col = new_scroll.min(max_scroll);
+                }
+                return WidgetAction::Consumed;
+            }
+
+            // Handle selection drag
+            if self.is_selecting && event_in_bounds(event, bounds) {
+                let content_top = bounds.y + 2;
+                let content_left = bounds.x + 2;
+
+                if *row >= content_top && *col >= content_left {
+                    let editor_y = row.saturating_sub(content_top) as usize;
+                    let editor_x = col.saturating_sub(content_left) as usize;
+
+                    let target_line = self.scroll_row + editor_y;
+                    let target_col = self.scroll_col + editor_x;
+
+                    if target_line < self.buffer.line_count() {
+                        self.cursor_line = target_line;
+                        let line_len = self.buffer.line(target_line).map(|l| l.len()).unwrap_or(0);
+                        self.cursor_col = target_col.min(line_len);
+                    }
+
+                    match (self.click_count, self.selection_anchor) {
+                        (2, Some(anchor)) => self.extend_selection_by_word(anchor),
+                        (3, Some(anchor)) => self.extend_selection_by_line(anchor),
+                        (4, Some(anchor)) => self.extend_selection_by_paragraph(anchor),
+                        _ => self.update_selection(),
+                    }
+                    return WidgetAction::Consumed;
+                }
+            }
+        }
+
+        // Handle mouse release
+        if let InputEvent::MouseRelease { .. } = event {
+            state.vscroll_dragging = false;
+            state.hscroll_dragging = false;
+            self.end_selection();
+            return WidgetAction::Consumed;
+        }
+
+        // Only handle keyboard events if we have focus
+        if state.focus != Focus::Editor {
+            return WidgetAction::Ignored;
+        }
+
+        // Delegate to existing handle_input
+        if self.handle_input(event, state) {
+            WidgetAction::Consumed
+        } else {
+            WidgetAction::Ignored
+        }
+    }
+
+    fn handle_scroll(&mut self, event: &crate::input::InputEvent, bounds: Rect) -> WidgetAction {
+        use crate::input::InputEvent;
+
+        if !event_in_bounds(event, bounds) {
+            return WidgetAction::Ignored;
+        }
+
+        match event {
+            InputEvent::ScrollUp { .. } => {
+                self.scroll_row = self.scroll_row.saturating_sub(3);
+                WidgetAction::Consumed
+            }
+            InputEvent::ScrollDown { .. } => {
+                let max_scroll = self.buffer.line_count().saturating_sub(1);
+                self.scroll_row = (self.scroll_row + 3).min(max_scroll);
+                WidgetAction::Consumed
+            }
+            InputEvent::ScrollLeft { .. } => {
+                self.scroll_col = self.scroll_col.saturating_sub(6);
+                WidgetAction::Consumed
+            }
+            InputEvent::ScrollRight { .. } => {
+                self.scroll_col += 6;
+                WidgetAction::Consumed
+            }
+            _ => WidgetAction::Ignored,
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn focus_type(&self) -> Option<Focus> {
+        Some(Focus::Editor)
+    }
 }

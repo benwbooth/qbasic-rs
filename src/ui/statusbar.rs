@@ -5,8 +5,14 @@ use crate::terminal::Color;
 use crate::state::{AppState, EditorMode, RunState};
 use super::layout::Rect;
 
-/// The status bar at the bottom of the screen
+/// The status bar at the bottom of the screen (stateless)
 pub struct StatusBar;
+
+impl StatusBar {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 impl StatusBar {
     /// Draw the status bar
@@ -50,6 +56,11 @@ impl StatusBar {
         let pos_str = format!("{:05}:{:03}", cursor_line + 1, cursor_col + 1);
         let right_text = format!("{}  {}", pos_str, mode_str);
         let right_x = col + width.saturating_sub(right_text.len() as u16);
+
+        // Draw vertical separator 3 chars left of position info
+        let sep_x = right_x.saturating_sub(3);
+        screen.draw_vrule(row, sep_x, Color::White, Color::Cyan);
+
         screen.write_str(row, right_x, &right_text, Color::White, Color::Cyan);
     }
 
@@ -81,3 +92,12 @@ impl StatusBar {
         }
     }
 }
+
+impl Default for StatusBar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// Note: StatusBar does NOT implement MainWidget because it needs cursor info from Editor.
+// It is drawn specially by the Widgets container which has access to both Editor and StatusBar.

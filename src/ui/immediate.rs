@@ -4,7 +4,8 @@
 use crate::screen::Screen;
 use crate::terminal::Color;
 use crate::state::AppState;
-use super::layout::{Rect, LayoutItem, compute_layout};
+use super::layout::{Rect, LayoutItem};
+use super::window_chrome;
 
 /// The immediate window at the bottom
 pub struct ImmediateWindow {
@@ -50,15 +51,8 @@ impl ImmediateWindow {
         let title_x = col + (width.saturating_sub(title.len() as u16)) / 2;
         screen.write_str(row, title_x, title, border_fg, Color::Blue);
 
-        // Maximize/Minimize button at right of title bar
-        let button_x = col + width - 4;
-        if state.immediate_maximized {
-            // Show restore button when maximized (vertical up-down arrow)
-            screen.write_str(row, button_x, "[↕]", Color::White, Color::Blue);
-        } else {
-            // Show maximize button when normal (up arrow)
-            screen.write_str(row, button_x, "[↑]", Color::White, Color::Blue);
-        }
+        // Maximize/Minimize button at right of title bar (shared code)
+        window_chrome::draw_maximize_button(screen, row, col, width, state.immediate_maximized, border_fg, Color::Blue);
 
         // Content area
         let content_row = row + 1;
@@ -245,12 +239,12 @@ impl ImmediateWindow {
     /// Creates regions for the toggle button and border
     pub fn title_bar_layout(&self, bounds: Rect) -> LayoutItem {
         // Title bar is the first row inside the window
-        // Layout: [border][...title...][button][border]
+        // Layout: [border][...title...][button][border] (matches window_chrome layout)
         LayoutItem::hstack(vec![
             LayoutItem::leaf("left_border").fixed_width(1),
             LayoutItem::leaf("title").width(super::layout::Size::Flex(1)),
-            LayoutItem::leaf("toggle_button").fixed_width(3), // [↑] or [↓]
-            LayoutItem::leaf("right_border").fixed_width(1),
+            LayoutItem::leaf("toggle_button").fixed_width(3), // [↑] or [↕]
+            LayoutItem::leaf("right_border").fixed_width(2),  // 2 chars space to corner
         ])
         .fixed_height(1)
         .fixed_width(bounds.width)
@@ -262,33 +256,85 @@ impl ImmediateWindow {
     pub fn handle_click(&self, row: u16, col: u16, bounds: Rect, is_maximized: bool) -> ImmediateClickResult {
         // Convert bounds to 1-based
         let title_row = bounds.y + 1;
+        let window_col = bounds.x + 1;
 
         // Check if click is on the title bar row
         if row == title_row {
-            // Build and compute title bar layout
-            let title_bounds = Rect {
-                x: bounds.x + 1, // 1-based column
-                y: title_row,
-                width: bounds.width,
-                height: 1,
-            };
-            let layout = compute_layout(&self.title_bar_layout(bounds), title_bounds);
-
-            // Check which element was hit
-            if let Some(hit_id) = layout.hit_test(row, col) {
-                match hit_id.as_str() {
-                    "toggle_button" => return ImmediateClickResult::ToggleMaximize,
-                    "title" | "left_border" | "right_border" => {
-                        if !is_maximized {
-                            return ImmediateClickResult::StartResize;
-                        }
-                    }
-                    _ => {}
-                }
+            // Use shared hit testing for maximize button
+            if window_chrome::is_maximize_button_click(row, col, title_row, window_col, bounds.width) {
+                return ImmediateClickResult::ToggleMaximize;
+            }
+            // Click on title bar (not on button) - start resize if not maximized
+            if window_chrome::is_title_bar_click(row, col, title_row, window_col, bounds.width) && !is_maximized {
+                return ImmediateClickResult::StartResize;
             }
         }
 
         // Click anywhere else in the window - focus it
         ImmediateClickResult::Focus
+    }
+}
+
+// Implement MainWidget trait
+use super::main_widget::{MainWidget, WidgetAction, event_in_bounds};
+use crate::state::Focus;
+
+impl MainWidget for ImmediateWindow {
+    fn id(&self) -> &'static str {
+        "immediate"
+    }
+
+    fn draw(&mut self, screen: &mut Screen, state: &AppState, bounds: Rect) {
+        // Delegate to existing draw method
+        let has_focus = state.focus == Focus::Immediate;
+        ImmediateWindow::draw(self, screen, state, bounds, has_focus);
+    }
+
+    fn handle_event(&mut self, event: &crate::input::InputEvent, state: &mut AppState, bounds: Rect) -> WidgetAction {
+        use crate::input::InputEvent;
+
+        // Only handle events if we have focus (for keyboard) or event is in bounds (for mouse)
+        match event {
+            InputEvent::MouseClick { row, col } => {
+                if !event_in_bounds(event, bounds) {
+                    return WidgetAction::Ignored;
+                }
+                match self.handle_click(*row, *col, bounds, state.immediate_maximized) {
+                    ImmediateClickResult::ToggleMaximize => WidgetAction::Toggle("immediate_maximized"),
+                    ImmediateClickResult::StartResize => WidgetAction::StartDrag("immediate_resize"),
+                    ImmediateClickResult::Focus => WidgetAction::SetFocus(Focus::Immediate),
+                    ImmediateClickResult::None => WidgetAction::Consumed,
+                }
+            }
+            _ if state.focus != Focus::Immediate => WidgetAction::Ignored,
+            InputEvent::Escape => {
+                // Escape returns to editor
+                WidgetAction::SetFocus(Focus::Editor)
+            }
+            _ => {
+                // Handle keyboard input when focused
+                if let Some(cmd) = self.handle_input(event) {
+                    WidgetAction::ExecuteCommand(cmd)
+                } else {
+                    WidgetAction::Consumed
+                }
+            }
+        }
+    }
+
+    fn handle_scroll(&mut self, event: &crate::input::InputEvent, bounds: Rect) -> WidgetAction {
+        // Immediate window doesn't scroll (yet), but absorb scroll events within bounds
+        if event_in_bounds(event, bounds) {
+            return WidgetAction::Consumed;
+        }
+        WidgetAction::Ignored
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn focus_type(&self) -> Option<Focus> {
+        Some(Focus::Immediate)
     }
 }

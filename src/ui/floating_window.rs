@@ -8,6 +8,7 @@ use crate::input::InputEvent;
 use crate::screen::Screen;
 use crate::terminal::Color;
 use super::layout::Rect;
+use super::window_chrome;
 
 /// A floating window with drag and resize support
 pub struct FloatingWindow {
@@ -32,6 +33,8 @@ pub struct FloatingWindow {
     maximized: bool,
     /// Saved bounds for restore (x, y, width, height)
     saved_bounds: Option<(u16, u16, u16, u16)>,
+    /// Insets used when maximizing (left, top, right, bottom)
+    maximize_insets: (u16, u16, u16, u16),
     /// Last click time for double-click detection
     last_click_time: std::time::Instant,
     /// Last click position
@@ -54,6 +57,7 @@ impl FloatingWindow {
             resizing: false,
             maximized: false,
             saved_bounds: None,
+            maximize_insets: (1, 1, 1, 1),
             last_click_time: std::time::Instant::now(),
             last_click_pos: (0, 0),
         }
@@ -70,6 +74,12 @@ impl FloatingWindow {
     pub fn with_min_size(mut self, min_width: u16, min_height: u16) -> Self {
         self.min_width = min_width;
         self.min_height = min_height;
+        self
+    }
+
+    /// Set maximize insets (left, top, right, bottom)
+    pub fn with_maximize_insets(mut self, left: u16, top: u16, right: u16, bottom: u16) -> Self {
+        self.maximize_insets = (left, top, right, bottom);
         self
     }
 
@@ -101,12 +111,12 @@ impl FloatingWindow {
 
     /// Check if a point is in the title bar (excluding maximize button)
     fn in_title_bar(&self, row: u16, col: u16) -> bool {
-        row == self.y && col >= self.x && col < self.x + self.width - 3
+        window_chrome::is_title_bar_click(row, col, self.y, self.x, self.width)
     }
 
-    /// Check if a point is on the maximize button [^] (2 chars from right corner)
+    /// Check if a point is on the maximize button
     fn in_maximize_button(&self, row: u16, col: u16) -> bool {
-        row == self.y && col >= self.x + self.width - 3 && col < self.x + self.width - 1
+        window_chrome::is_maximize_button_click(row, col, self.y, self.x, self.width)
     }
 
     /// Check if a point is in the resize handle (bottom-right corner)
@@ -129,12 +139,20 @@ impl FloatingWindow {
         } else {
             // Maximize
             self.saved_bounds = Some((self.x, self.y, self.width, self.height));
-            self.x = 1;
-            self.y = 1;
-            self.width = screen_width - 2;
-            self.height = screen_height - 2;
+            self.apply_maximize(screen_width, screen_height);
             self.maximized = true;
         }
+    }
+
+    /// Apply maximize bounds without changing saved state
+    pub fn apply_maximize(&mut self, screen_width: u16, screen_height: u16) {
+        let (left, top, right, bottom) = self.maximize_insets;
+        let width = screen_width.saturating_sub(left + right).max(1);
+        let height = screen_height.saturating_sub(top + bottom).max(1);
+        self.x = left.min(screen_width.saturating_sub(1));
+        self.y = top.min(screen_height.saturating_sub(1));
+        self.width = width;
+        self.height = height;
     }
 
     /// Check if maximized
@@ -231,15 +249,17 @@ impl FloatingWindow {
         // Draw border
         screen.draw_box(self.y, self.x, self.width, self.height, Color::Black, Color::LightGray);
 
-        // Draw title (centered in title bar, but leave room for maximize button)
-        let title_str = format!(" {} ", self.title);
-        let title_x = self.x + (self.width.saturating_sub(title_str.len() as u16 + 3)) / 2;
-        screen.write_str(self.y, title_x, &title_str, Color::Black, Color::LightGray);
-
-        // Draw maximize/restore button (2 chars from right corner)
-        let btn_col = self.x + self.width - 3;
-        let btn_char = if self.maximized { '▼' } else { '▲' };
-        screen.set(self.y, btn_col, btn_char, Color::Black, Color::LightGray);
+        // Draw title bar with maximize button using shared code
+        window_chrome::draw_title_bar(
+            screen,
+            self.y,
+            self.x,
+            self.width,
+            &self.title,
+            self.maximized,
+            Color::Black,
+            Color::LightGray,
+        );
     }
 
     /// Check if currently dragging

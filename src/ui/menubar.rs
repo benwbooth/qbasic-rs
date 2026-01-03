@@ -514,3 +514,87 @@ impl MenuBar {
         MenuClickResult::Absorbed
     }
 }
+
+// Implement MainWidget trait
+use super::main_widget::{MainWidget, WidgetAction, event_in_bounds};
+use crate::state::Focus;
+
+impl MainWidget for MenuBar {
+    fn id(&self) -> &'static str {
+        "menu_bar"
+    }
+
+    fn draw(&mut self, screen: &mut Screen, state: &AppState, bounds: Rect) {
+        MenuBar::draw(self, screen, state, bounds);
+    }
+
+    fn handle_event(&mut self, event: &crate::input::InputEvent, state: &mut AppState, bounds: Rect) -> WidgetAction {
+        use crate::input::InputEvent;
+
+        // Handle mouse clicks
+        if let InputEvent::MouseClick { row, col } = event {
+            // If menu is open, check for dropdown clicks first (dropdown overlays other widgets)
+            if state.menu_open {
+                match self.handle_dropdown_click(*row, *col, state) {
+                    MenuClickResult::Execute(menu_idx, item_idx) => {
+                        state.close_menu();
+                        return WidgetAction::MenuAction(menu_idx, item_idx);
+                    }
+                    MenuClickResult::Absorbed => {
+                        return WidgetAction::Consumed;
+                    }
+                    MenuClickResult::CloseMenu => {
+                        state.close_menu();
+                        // Fall through to check if click was on menu bar
+                    }
+                    _ => {}
+                }
+            }
+
+            // Check for menu bar clicks
+            if event_in_bounds(event, bounds) {
+                match self.handle_bar_click(*row, *col, bounds, state) {
+                    MenuClickResult::OpenMenu(i) => {
+                        state.menu_index = i;
+                        state.menu_item = 0;
+                        state.open_menu();
+                        return WidgetAction::Consumed;
+                    }
+                    MenuClickResult::CloseMenu => {
+                        state.close_menu();
+                        return WidgetAction::Consumed;
+                    }
+                    _ => return WidgetAction::Consumed,
+                }
+            }
+            return WidgetAction::Ignored;
+        }
+
+        // Handle keyboard when menu is open
+        if state.menu_open && state.focus == Focus::Menu {
+            if let Some(action) = self.handle_input(state, event) {
+                match action {
+                    MenuAction::Execute(menu_idx, item_idx) => {
+                        return WidgetAction::MenuAction(menu_idx, item_idx);
+                    }
+                    MenuAction::Close => {
+                        return WidgetAction::Consumed;
+                    }
+                    MenuAction::Navigate => {
+                        return WidgetAction::Consumed;
+                    }
+                }
+            }
+        }
+
+        WidgetAction::Ignored
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn focus_type(&self) -> Option<Focus> {
+        Some(Focus::Menu)
+    }
+}

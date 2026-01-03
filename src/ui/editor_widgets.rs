@@ -5,6 +5,7 @@
 
 use super::layout::Rect;
 use super::scrollbar::{ScrollbarState, handle_vscroll_click, handle_hscroll_click, ScrollAction};
+use super::window_chrome;
 
 /// Result of handling an editor click
 #[derive(Debug, Clone, PartialEq)]
@@ -21,6 +22,10 @@ pub enum EditorClickAction {
     StartVDrag,
     /// Start horizontal scrollbar drag
     StartHDrag,
+    /// Toggle maximize state
+    MaximizeToggle,
+    /// Double-click on title bar to toggle maximize
+    TitleBarDoubleClick,
 }
 
 /// Handle a click in the editor area
@@ -44,6 +49,11 @@ pub fn handle_editor_click(
     let editor_col = editor_rect.x + 1;
     let editor_width = editor_rect.width;
     let editor_height = editor_rect.height;
+
+    // Check for maximize button click (on title bar)
+    if window_chrome::is_maximize_button_click(row, col, editor_row, editor_col, editor_width) {
+        return EditorClickAction::MaximizeToggle;
+    }
 
     // Scrollbar positions
     let vscroll_col = editor_col + editor_width - 1;

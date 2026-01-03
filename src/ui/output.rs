@@ -309,3 +309,60 @@ fn dos_to_color(color: u8) -> Color {
         _ => Color::White,
     }
 }
+
+// Implement MainWidget trait
+use super::main_widget::{MainWidget, WidgetAction, event_in_bounds};
+use crate::state::Focus;
+
+impl MainWidget for OutputWindow {
+    fn id(&self) -> &'static str {
+        "output"
+    }
+
+    fn draw(&mut self, screen: &mut Screen, state: &AppState, bounds: Rect) {
+        OutputWindow::draw(self, screen, state, bounds);
+    }
+
+    fn handle_event(&mut self, event: &crate::input::InputEvent, _state: &mut AppState, bounds: Rect) -> WidgetAction {
+        use crate::input::InputEvent;
+
+        if let InputEvent::MouseClick { row, col } = event {
+            if event_in_bounds(event, bounds) {
+                match self.handle_click(*row, *col, bounds) {
+                    OutputClickResult::Close => return WidgetAction::Toggle("show_output"),
+                    OutputClickResult::None => return WidgetAction::Consumed,
+                }
+            }
+        }
+
+        WidgetAction::Ignored
+    }
+
+    fn handle_scroll(&mut self, event: &crate::input::InputEvent, bounds: Rect) -> WidgetAction {
+        use crate::input::InputEvent;
+
+        if !event_in_bounds(event, bounds) {
+            return WidgetAction::Ignored;
+        }
+
+        match event {
+            InputEvent::ScrollUp { .. } => {
+                self.scroll_up(3);
+                WidgetAction::Consumed
+            }
+            InputEvent::ScrollDown { .. } => {
+                self.scroll_down(3);
+                WidgetAction::Consumed
+            }
+            _ => WidgetAction::Ignored,
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        false
+    }
+
+    fn focus_type(&self) -> Option<Focus> {
+        None
+    }
+}

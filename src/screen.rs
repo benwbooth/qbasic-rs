@@ -29,6 +29,48 @@ impl Cell {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ClipRect {
+    row: u16,
+    col: u16,
+    width: u16,
+    height: u16,
+}
+
+impl ClipRect {
+    fn contains(&self, row: u16, col: u16) -> bool {
+        let row_end = self.row.saturating_add(self.height);
+        let col_end = self.col.saturating_add(self.width);
+        row >= self.row && row < row_end && col >= self.col && col < col_end
+    }
+
+    fn end_row(self) -> u32 {
+        self.row as u32 + self.height as u32
+    }
+
+    fn end_col(self) -> u32 {
+        self.col as u32 + self.width as u32
+    }
+
+    fn intersect(self, other: ClipRect) -> Option<ClipRect> {
+        let row = self.row.max(other.row);
+        let col = self.col.max(other.col);
+        let end_row = self.end_row().min(other.end_row());
+        let end_col = self.end_col().min(other.end_col());
+        let row_u = row as u32;
+        let col_u = col as u32;
+        if end_row <= row_u || end_col <= col_u {
+            return None;
+        }
+        Some(ClipRect {
+            row,
+            col,
+            width: (end_col - col_u) as u16,
+            height: (end_row - row_u) as u16,
+        })
+    }
+}
+
 /// Double-buffered screen
 pub struct Screen {
     width: u16,
@@ -41,6 +83,7 @@ pub struct Screen {
     cursor_style: CursorStyle,
     /// Pending sixel graphics data (if any)
     sixel_data: Option<String>,
+    clip_stack: Vec<ClipRect>,
 }
 
 impl Screen {
@@ -59,6 +102,7 @@ impl Screen {
             cursor_visible: true,
             cursor_style: CursorStyle::BlinkingUnderline, // Default to blinking underline
             sixel_data: None,
+            clip_stack: Vec::new(),
         }
     }
 
@@ -76,6 +120,7 @@ impl Screen {
         self.height = height;
         self.front = vec![Cell::new('\0', Color::Black, Color::Black); size];
         self.back = vec![default_cell; size];
+        self.clip_stack.clear();
     }
 
     /// Convert row/col to buffer index (1-based coordinates)
@@ -89,6 +134,9 @@ impl Screen {
 
     /// Set a cell in the back buffer
     pub fn set(&mut self, row: u16, col: u16, ch: char, fg: Color, bg: Color) {
+        if !self.in_clip(row, col) {
+            return;
+        }
         if let Some(idx) = self.index(row, col) {
             self.back[idx] = Cell::new(ch, fg, bg);
         }
@@ -132,6 +180,24 @@ impl Screen {
     pub fn clear_with(&mut self, fg: Color, bg: Color) {
         let cell = Cell::new(' ', fg, bg);
         self.back.fill(cell);
+    }
+
+    /// Draw a horizontal rule with T-connectors at the edges
+    /// Used for dividing sections within a box
+    pub fn draw_hrule(&mut self, row: u16, col: u16, width: u16, fg: Color, bg: Color) {
+        if width < 2 {
+            return;
+        }
+        self.set(row, col, '├', fg, bg);
+        for c in 1..width - 1 {
+            self.set(row, col + c, '─', fg, bg);
+        }
+        self.set(row, col + width - 1, '┤', fg, bg);
+    }
+
+    /// Draw a vertical rule (single character separator)
+    pub fn draw_vrule(&mut self, row: u16, col: u16, fg: Color, bg: Color) {
+        self.set(row, col, '│', fg, bg);
     }
 
     /// Draw a single-line box
@@ -204,7 +270,12 @@ impl Screen {
         // Right shadow (2 chars wide)
         for r in 1..=height {
             for c in 0..2 {
-                if let Some(idx) = self.index(row + r, col + width + c) {
+                let rr = row + r;
+                let cc = col + width + c;
+                if !self.in_clip(rr, cc) {
+                    continue;
+                }
+                if let Some(idx) = self.index(rr, cc) {
                     // Preserve the character but darken
                     let cell = &mut self.back[idx];
                     cell.fg = Color::DarkGray;
@@ -215,11 +286,49 @@ impl Screen {
 
         // Bottom shadow
         for c in 2..width + 2 {
-            if let Some(idx) = self.index(row + height, col + c) {
+            let rr = row + height;
+            let cc = col + c;
+            if !self.in_clip(rr, cc) {
+                continue;
+            }
+            if let Some(idx) = self.index(rr, cc) {
                 let cell = &mut self.back[idx];
                 cell.fg = Color::DarkGray;
                 cell.bg = Color::Black;
             }
+        }
+    }
+
+    /// Push a clipping rectangle (intersected with any existing clip)
+    pub fn push_clip(&mut self, row: u16, col: u16, width: u16, height: u16) {
+        let rect = ClipRect {
+            row,
+            col,
+            width,
+            height,
+        };
+        let next = if let Some(current) = self.clip_stack.last().copied() {
+            current.intersect(rect).unwrap_or(ClipRect {
+                row,
+                col,
+                width: 0,
+                height: 0,
+            })
+        } else {
+            rect
+        };
+        self.clip_stack.push(next);
+    }
+
+    /// Pop the most recent clipping rectangle
+    pub fn pop_clip(&mut self) {
+        self.clip_stack.pop();
+    }
+
+    fn in_clip(&self, row: u16, col: u16) -> bool {
+        match self.clip_stack.last() {
+            Some(rect) => rect.contains(row, col),
+            None => true,
         }
     }
 

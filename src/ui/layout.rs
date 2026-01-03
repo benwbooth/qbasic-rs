@@ -9,6 +9,17 @@ pub struct Rect {
     pub height: u16,
 }
 
+/// Size hint for widgets in the widget tree system
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SizeHint {
+    /// Minimum width required
+    pub min_width: u16,
+    /// Minimum height required
+    pub min_height: u16,
+    /// Flex weight (0 = fixed, >0 = takes up remaining space proportionally)
+    pub flex: u16,
+}
+
 impl Rect {
     pub fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
         Self { x, y, width, height }
@@ -131,11 +142,6 @@ impl LayoutItem {
         self
     }
 
-    pub fn min_size(mut self, w: u16, h: u16) -> Self {
-        self.min_width = w;
-        self.min_height = h;
-        self
-    }
 
     pub fn spacing(mut self, s: u16) -> Self {
         match &mut self.node {
@@ -181,6 +187,32 @@ pub fn compute_layout(item: &LayoutItem, bounds: Rect) -> ComputedLayout {
     let mut result = ComputedLayout::default();
     compute_node(item, bounds, &mut result);
     result
+}
+
+/// Compute child bounds for a container layout item within the given bounds.
+/// Returns rects in the same order as the container's children.
+pub fn compute_child_bounds(item: &LayoutItem, bounds: Rect) -> Vec<Rect> {
+    match &item.node {
+        LayoutNode::VStack { children, spacing, padding } => {
+            let inner = Rect {
+                x: bounds.x + padding,
+                y: bounds.y + padding,
+                width: bounds.width.saturating_sub(padding * 2),
+                height: bounds.height.saturating_sub(padding * 2),
+            };
+            distribute_vertical(children, inner, *spacing)
+        }
+        LayoutNode::HStack { children, spacing, padding } => {
+            let inner = Rect {
+                x: bounds.x + padding,
+                y: bounds.y + padding,
+                width: bounds.width.saturating_sub(padding * 2),
+                height: bounds.height.saturating_sub(padding * 2),
+            };
+            distribute_horizontal(children, inner, *spacing)
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn compute_node(item: &LayoutItem, bounds: Rect, result: &mut ComputedLayout) {
@@ -341,92 +373,6 @@ fn distribute_horizontal(children: &[LayoutItem], bounds: Rect, spacing: u16) ->
     rects
 }
 
-/// Create a standard file dialog layout (full dialog including title bar)
-pub fn file_dialog_layout() -> LayoutItem {
-    LayoutItem::vstack(vec![
-        // Title bar row (on the border)
-        LayoutItem::hstack(vec![
-            LayoutItem::leaf("title_bar").width(Size::Flex(1)),
-            LayoutItem::leaf("maximize").fixed_width(3),
-            LayoutItem::leaf("close").fixed_width(3),
-        ]).fixed_height(1),
-
-        // Content area inside border
-        LayoutItem::vstack(vec![
-            // Filename row
-            LayoutItem::hstack(vec![
-                LayoutItem::leaf("filename_label").fixed_width(12),
-                LayoutItem::leaf("filename_field").width(Size::Flex(1)),
-            ]).fixed_height(1),
-
-            LayoutItem::spacer().fixed_height(1),
-
-            // Directory row
-            LayoutItem::hstack(vec![
-                LayoutItem::leaf("directory_label").fixed_width(12),
-                LayoutItem::leaf("directory_field").width(Size::Flex(1)),
-            ]).fixed_height(1),
-
-            LayoutItem::spacer().fixed_height(1),
-
-            // Labels row
-            LayoutItem::hstack(vec![
-                LayoutItem::leaf("files_label").width(Size::Flex(2)),
-                LayoutItem::leaf("dirs_label").width(Size::Flex(1)),
-            ]).fixed_height(1).spacing(2),
-
-            // Lists row (flexible height) - files 66%, dirs 33%
-            LayoutItem::hstack(vec![
-                LayoutItem::leaf("files_list").width(Size::Flex(2)).height(Size::Flex(1)).min_size(10, 3),
-                LayoutItem::leaf("dirs_list").width(Size::Flex(1)).height(Size::Flex(1)).min_size(10, 3),
-            ]).height(Size::Flex(1)).spacing(2),
-
-            LayoutItem::spacer().fixed_height(1),
-
-            // Buttons row
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer(),
-                LayoutItem::leaf("ok_button").fixed_width(8),
-                LayoutItem::leaf("cancel_button").fixed_width(10),
-                LayoutItem::leaf("help_button").fixed_width(8),
-                LayoutItem::spacer(),
-            ]).fixed_height(1).spacing(2),
-        ]).height(Size::Flex(1)).padding(1),
-
-        // Bottom border row (for resize handle)
-        LayoutItem::hstack(vec![
-            LayoutItem::spacer(),
-            LayoutItem::leaf("resize_handle").fixed_width(2),
-        ]).fixed_height(1),
-    ])
-}
-
-/// Create a simple message dialog layout
-#[allow(dead_code)]
-pub fn message_dialog_layout() -> LayoutItem {
-    LayoutItem::vstack(vec![
-        // Title bar
-        LayoutItem::hstack(vec![
-            LayoutItem::leaf("title").width(Size::Flex(1)),
-            LayoutItem::leaf("close").fixed_width(3),
-        ]).fixed_height(1),
-
-        LayoutItem::spacer().fixed_height(1),
-
-        // Message content
-        LayoutItem::leaf("content").height(Size::Flex(1)),
-
-        LayoutItem::spacer().fixed_height(1),
-
-        // Buttons row
-        LayoutItem::hstack(vec![
-            LayoutItem::spacer(),
-            LayoutItem::leaf("ok_button").fixed_width(8),
-            LayoutItem::spacer(),
-        ]).fixed_height(1),
-    ]).padding(1)
-}
-
 // ============================================================================
 // Main Screen Layouts
 // ============================================================================
@@ -441,6 +387,7 @@ pub fn main_screen_layout(
     show_immediate: bool,
     immediate_height: u16,
     immediate_maximized: bool,
+    editor_maximized: bool,
     show_output: bool,
     output_height: u16,
 ) -> LayoutItem {
@@ -448,23 +395,26 @@ pub fn main_screen_layout(
         LayoutItem::leaf("menu_bar").fixed_height(1),
     ];
 
-    // Output window appears above editor when shown
-    if show_output {
-        children.push(LayoutItem::leaf("output").fixed_height(output_height));
-    }
-
-    // If immediate is maximized, it takes all the editor space
-    if immediate_maximized && show_immediate {
-        // Minimal editor (just 1 line visible)
-        children.push(LayoutItem::leaf("editor").fixed_height(1));
-        // Immediate takes remaining space
-        children.push(LayoutItem::leaf("immediate").height(Size::Flex(1)));
-    } else {
-        // Normal layout
+    // If editor is maximized, it takes all the space (hide output and immediate)
+    if editor_maximized {
         children.push(LayoutItem::leaf("editor").height(Size::Flex(1)));
+    } else {
+        // Output window appears above editor when shown
+        if show_output {
+            children.push(LayoutItem::leaf("output").fixed_height(output_height));
+        }
 
-        if show_immediate {
-            children.push(LayoutItem::leaf("immediate").fixed_height(immediate_height));
+        // If immediate is maximized, it takes all the editor space
+        if immediate_maximized && show_immediate {
+            // Hide editor completely, immediate takes all space
+            children.push(LayoutItem::leaf("immediate").height(Size::Flex(1)));
+        } else {
+            // Normal layout
+            children.push(LayoutItem::leaf("editor").height(Size::Flex(1)));
+
+            if show_immediate {
+                children.push(LayoutItem::leaf("immediate").fixed_height(immediate_height));
+            }
         }
     }
 
@@ -575,334 +525,6 @@ pub fn immediate_window_layout() -> LayoutItem {
 }
 
 // ============================================================================
-// Dialog Layouts
-// ============================================================================
-
-/// Find dialog layout
-pub fn find_dialog_layout() -> LayoutItem {
-    LayoutItem::vstack(vec![
-        // Title bar
-        LayoutItem::leaf("title_bar").fixed_height(1),
-
-        // Content area (padding 1)
-        LayoutItem::vstack(vec![
-            // Find row
-            LayoutItem::hstack(vec![
-                LayoutItem::leaf("find_label").fixed_width(8),
-                LayoutItem::leaf("find_field").width(Size::Flex(1)),
-            ]).fixed_height(1),
-
-            LayoutItem::spacer().fixed_height(1),
-
-            // Checkbox row
-            LayoutItem::hstack(vec![
-                LayoutItem::leaf("case_checkbox").fixed_width(20),
-                LayoutItem::leaf("whole_checkbox").fixed_width(18),
-            ]).fixed_height(1),
-
-            LayoutItem::spacer().fixed_height(1),
-
-            // Buttons row
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer(),
-                LayoutItem::leaf("ok_button").fixed_width(8),
-                LayoutItem::leaf("cancel_button").fixed_width(10),
-                LayoutItem::leaf("help_button").fixed_width(8),
-                LayoutItem::spacer(),
-            ]).fixed_height(1).spacing(2),
-        ]).height(Size::Flex(1)).padding(1),
-    ])
-}
-
-/// Replace dialog layout
-pub fn replace_dialog_layout() -> LayoutItem {
-    LayoutItem::vstack(vec![
-        // Title bar
-        LayoutItem::leaf("title_bar").fixed_height(1),
-
-        // Content area (padding 1)
-        LayoutItem::vstack(vec![
-            // Find row
-            LayoutItem::hstack(vec![
-                LayoutItem::leaf("find_label").fixed_width(12),
-                LayoutItem::leaf("find_field").width(Size::Flex(1)),
-            ]).fixed_height(1),
-
-            LayoutItem::spacer().fixed_height(1),
-
-            // Replace row
-            LayoutItem::hstack(vec![
-                LayoutItem::leaf("replace_label").fixed_width(12),
-                LayoutItem::leaf("replace_field").width(Size::Flex(1)),
-            ]).fixed_height(1),
-
-            LayoutItem::spacer().fixed_height(1),
-
-            // Checkbox row
-            LayoutItem::hstack(vec![
-                LayoutItem::leaf("case_checkbox").fixed_width(20),
-                LayoutItem::leaf("whole_checkbox").fixed_width(18),
-            ]).fixed_height(1),
-
-            LayoutItem::spacer().fixed_height(1),
-
-            // Buttons row
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer(),
-                LayoutItem::leaf("find_next_button").fixed_width(12),
-                LayoutItem::leaf("replace_button").fixed_width(10),
-                LayoutItem::leaf("replace_all_button").fixed_width(14),
-                LayoutItem::leaf("cancel_button").fixed_width(10),
-                LayoutItem::spacer(),
-            ]).fixed_height(1).spacing(1),
-        ]).height(Size::Flex(1)).padding(1),
-    ])
-}
-
-/// Go To Line dialog layout
-pub fn goto_line_dialog_layout() -> LayoutItem {
-    LayoutItem::vstack(vec![
-        // Title bar
-        LayoutItem::leaf("title_bar").fixed_height(1),
-
-        // Content area (padding 1)
-        LayoutItem::vstack(vec![
-            // Line number row
-            LayoutItem::hstack(vec![
-                LayoutItem::leaf("line_label").fixed_width(14),
-                LayoutItem::leaf("line_field").width(Size::Flex(1)),
-            ]).fixed_height(1),
-
-            LayoutItem::spacer().fixed_height(1),
-
-            // Buttons row
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer(),
-                LayoutItem::leaf("ok_button").fixed_width(8),
-                LayoutItem::leaf("cancel_button").fixed_width(10),
-                LayoutItem::spacer(),
-            ]).fixed_height(1).spacing(2),
-        ]).height(Size::Flex(1)).padding(1),
-    ])
-}
-
-/// Welcome dialog layout
-pub fn welcome_dialog_layout() -> LayoutItem {
-    LayoutItem::vstack(vec![
-        // Title bar
-        LayoutItem::leaf("title_bar").fixed_height(1),
-
-        // Content area (padding 1)
-        LayoutItem::vstack(vec![
-            LayoutItem::spacer().fixed_height(1),
-            LayoutItem::leaf("welcome_text").fixed_height(1),
-            LayoutItem::spacer().fixed_height(1),
-            LayoutItem::leaf("copyright").fixed_height(1),
-            LayoutItem::spacer().fixed_height(2),
-
-            // Options on separate lines (vertically stacked)
-            LayoutItem::leaf("start_button").fixed_height(1),
-            LayoutItem::spacer().fixed_height(1),
-            LayoutItem::leaf("exit_button").fixed_height(1),
-
-            LayoutItem::spacer().height(Size::Flex(1)),
-        ]).height(Size::Flex(1)).padding(1),
-    ])
-}
-
-/// Help dialog layout with scrollbars (matches editor style)
-pub fn help_dialog_layout() -> LayoutItem {
-    LayoutItem::vstack(vec![
-        // Title bar with maximize button (on the border)
-        LayoutItem::hstack(vec![
-            LayoutItem::leaf("title_bar").width(Size::Flex(1)),
-            LayoutItem::leaf("maximize").fixed_width(3),
-        ]).fixed_height(1),
-
-        // Main content area with vertical scrollbar (horizontal padding via spacers)
-        LayoutItem::hstack(vec![
-            LayoutItem::spacer().fixed_width(1), // Left padding
-            LayoutItem::leaf("content").width(Size::Flex(1)).height(Size::Flex(1)),
-            LayoutItem::leaf("vscrollbar").fixed_width(1).height(Size::Flex(1)),
-        ]).height(Size::Flex(1)),
-
-        // Horizontal scrollbar row
-        LayoutItem::hstack(vec![
-            LayoutItem::spacer().fixed_width(1), // Left padding
-            LayoutItem::leaf("hscrollbar").width(Size::Flex(1)),
-            LayoutItem::leaf("corner").fixed_width(1),
-        ]).fixed_height(1),
-
-        // Status/navigation bar
-        LayoutItem::hstack(vec![
-            LayoutItem::spacer().fixed_width(1), // Left padding
-            LayoutItem::leaf("nav_bar").width(Size::Flex(1)),
-        ]).fixed_height(1),
-
-        // Bottom row for resize handle (on the border)
-        LayoutItem::hstack(vec![
-            LayoutItem::spacer(),
-            LayoutItem::leaf("resize_handle").fixed_width(2),
-        ]).fixed_height(1),
-    ])
-}
-
-/// New Program confirmation dialog layout
-#[allow(dead_code)]
-pub fn new_program_dialog_layout() -> LayoutItem {
-    LayoutItem::vstack(vec![
-        // Title bar
-        LayoutItem::leaf("title_bar").fixed_height(1),
-
-        // Content area (padding 1)
-        LayoutItem::vstack(vec![
-            LayoutItem::spacer().fixed_height(1),
-            LayoutItem::leaf("message").height(Size::Flex(1)),
-            LayoutItem::spacer().fixed_height(1),
-
-            // Buttons row
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer(),
-                LayoutItem::leaf("yes_button").fixed_width(8),
-                LayoutItem::leaf("no_button").fixed_width(8),
-                LayoutItem::leaf("cancel_button").fixed_width(10),
-                LayoutItem::spacer(),
-            ]).fixed_height(1).spacing(2),
-        ]).height(Size::Flex(1)).padding(1),
-    ])
-}
-
-/// Print dialog layout
-pub fn print_dialog_layout() -> LayoutItem {
-    LayoutItem::vstack(vec![
-        // Title bar
-        LayoutItem::leaf("title_bar").fixed_height(1),
-
-        // Content area (padding 1)
-        LayoutItem::vstack(vec![
-            // Print option 1
-            LayoutItem::leaf("option_selected").fixed_height(1),
-
-            // Print option 2
-            LayoutItem::leaf("option_range").fixed_height(1),
-
-            LayoutItem::spacer().fixed_height(1),
-
-            // Range input row (if applicable)
-            LayoutItem::hstack(vec![
-                LayoutItem::leaf("range_label").fixed_width(12),
-                LayoutItem::leaf("range_field").width(Size::Flex(1)),
-            ]).fixed_height(1),
-
-            LayoutItem::spacer().height(Size::Flex(1)),
-
-            // Buttons row
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer(),
-                LayoutItem::leaf("ok_button").fixed_width(8),
-                LayoutItem::leaf("cancel_button").fixed_width(10),
-                LayoutItem::spacer(),
-            ]).fixed_height(1).spacing(2),
-        ]).height(Size::Flex(1)).padding(1),
-    ])
-}
-
-/// Confirm dialog layout (generic Yes/No/Cancel)
-#[allow(dead_code)]
-pub fn confirm_dialog_layout() -> LayoutItem {
-    LayoutItem::vstack(vec![
-        // Title bar
-        LayoutItem::leaf("title_bar").fixed_height(1),
-
-        // Content area (padding 1)
-        LayoutItem::vstack(vec![
-            LayoutItem::spacer().fixed_height(1),
-            LayoutItem::leaf("message").height(Size::Flex(1)),
-            LayoutItem::spacer().fixed_height(1),
-
-            // Buttons row
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer(),
-                LayoutItem::leaf("yes_button").fixed_width(8),
-                LayoutItem::leaf("no_button").fixed_width(8),
-                LayoutItem::leaf("cancel_button").fixed_width(10),
-                LayoutItem::spacer(),
-            ]).fixed_height(1).spacing(2),
-        ]).height(Size::Flex(1)).padding(1),
-    ])
-}
-
-/// Simple input dialog layout (NewSub, NewFunction, FindLabel, CommandArgs, HelpPath)
-pub fn simple_input_dialog_layout() -> LayoutItem {
-    LayoutItem::vstack(vec![
-        // Title bar
-        LayoutItem::leaf("title_bar").fixed_height(1),
-
-        // Content area (padding 1)
-        LayoutItem::vstack(vec![
-            // Input row
-            LayoutItem::hstack(vec![
-                LayoutItem::leaf("input_label").fixed_width(12),
-                LayoutItem::leaf("input_field").width(Size::Flex(1)),
-            ]).fixed_height(1),
-
-            LayoutItem::spacer().fixed_height(1),
-
-            // Buttons row
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer(),
-                LayoutItem::leaf("ok_button").fixed_width(8),
-                LayoutItem::leaf("cancel_button").fixed_width(10),
-                LayoutItem::spacer(),
-            ]).fixed_height(1).spacing(2),
-        ]).height(Size::Flex(1)).padding(1),
-    ])
-}
-
-/// Display options dialog layout
-pub fn display_options_dialog_layout() -> LayoutItem {
-    LayoutItem::vstack(vec![
-        // Title bar
-        LayoutItem::leaf("title_bar").fixed_height(1),
-
-        // Content area (padding 1)
-        LayoutItem::vstack(vec![
-            // Tab stops row
-            LayoutItem::hstack(vec![
-                LayoutItem::leaf("tabs_label").fixed_width(12),
-                LayoutItem::leaf("tabs_field").fixed_width(6),
-                LayoutItem::spacer(),
-            ]).fixed_height(1),
-
-            LayoutItem::spacer().fixed_height(1),
-
-            // Scrollbars checkbox
-            LayoutItem::leaf("scrollbars_checkbox").fixed_height(1),
-
-            LayoutItem::spacer().fixed_height(1),
-
-            // Color scheme label
-            LayoutItem::leaf("scheme_label").fixed_height(1),
-
-            // Color scheme options
-            LayoutItem::leaf("scheme_blue").fixed_height(1),
-            LayoutItem::leaf("scheme_dark").fixed_height(1),
-            LayoutItem::leaf("scheme_light").fixed_height(1),
-
-            LayoutItem::spacer().height(Size::Flex(1)),
-
-            // Buttons row
-            LayoutItem::hstack(vec![
-                LayoutItem::spacer(),
-                LayoutItem::leaf("ok_button").fixed_width(8),
-                LayoutItem::leaf("cancel_button").fixed_width(10),
-                LayoutItem::spacer(),
-            ]).fixed_height(1).spacing(2),
-        ]).height(Size::Flex(1)).padding(1),
-    ])
-}
-
-// ============================================================================
 // Menu Dropdown Layout
 // ============================================================================
 
@@ -918,96 +540,4 @@ pub fn menu_dropdown_layout(items: &[&str]) -> LayoutItem {
     }).collect();
 
     LayoutItem::vstack(children)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn print_layout_item(item: &LayoutItem, indent: usize) {
-        let pad = "  ".repeat(indent);
-        match &item.node {
-            LayoutNode::VStack { children, padding, .. } => {
-                println!("{}VStack(h={:?}, pad={}) [", pad, item.height, padding);
-                for child in children {
-                    print_layout_item(child, indent + 1);
-                }
-                println!("{}]", pad);
-            }
-            LayoutNode::HStack { children, padding, .. } => {
-                println!("{}HStack(h={:?}, pad={}) [", pad, item.height, padding);
-                for child in children {
-                    print_layout_item(child, indent + 1);
-                }
-                println!("{}]", pad);
-            }
-            LayoutNode::Leaf { id } => {
-                println!("{}Leaf({}, h={:?})", pad, id, item.height);
-            }
-            LayoutNode::Spacer => {
-                println!("{}Spacer(h={:?})", pad, item.height);
-            }
-        }
-    }
-
-    #[test]
-    fn test_help_dialog_layout() {
-        // Simulate a dialog at position (10, 5) with size 80x25
-        let bounds = Rect::new(10, 5, 80, 25);
-        let layout_item = help_dialog_layout();
-
-        // Debug: print the layout structure
-        println!("Layout structure:");
-        print_layout_item(&layout_item, 0);
-
-        let layout = compute_layout(&layout_item, bounds);
-
-        println!("\nHelp dialog layout (80x25 at 10,5):");
-        let mut rects: Vec<_> = layout.rects.iter().collect();
-        rects.sort_by_key(|(_, r)| (r.y, r.x));
-        for (id, rect) in rects {
-            println!("  {}: {}x{} at ({},{})", id, rect.width, rect.height, rect.x, rect.y);
-        }
-
-        // Check that content has reasonable dimensions
-        let content = layout.get("content").expect("content rect should exist");
-        assert!(content.height >= 10, "content height {} should be >= 10", content.height);
-        assert!(content.width >= 50, "content width {} should be >= 50", content.width);
-
-        // Check that vscrollbar exists and has height matching content
-        let vscrollbar = layout.get("vscrollbar").expect("vscrollbar rect should exist");
-        assert_eq!(vscrollbar.height, content.height, "vscrollbar height should match content height");
-        assert_eq!(vscrollbar.width, 1, "vscrollbar width should be 1");
-
-        // Check title bar is at top
-        let title_bar = layout.get("title_bar").expect("title_bar rect should exist");
-        assert_eq!(title_bar.y, 5, "title_bar should be at dialog top");
-        assert_eq!(title_bar.height, 1, "title_bar height should be 1");
-
-        // Check resize_handle exists at bottom border for hit testing
-        let resize_handle = layout.get("resize_handle").expect("resize_handle rect should exist");
-        assert_eq!(resize_handle.width, 2, "resize_handle width should be 2");
-        // resize_handle should be at the bottom of the dialog (y=5+25-1=29)
-        assert_eq!(resize_handle.y, 29, "resize_handle should be at dialog bottom");
-    }
-
-    #[test]
-    fn test_file_dialog_layout() {
-        // Simulate a dialog at position (10, 5) with size 60x18
-        let bounds = Rect::new(10, 5, 60, 18);
-        let layout = compute_layout(&file_dialog_layout(), bounds);
-
-        println!("File dialog layout (60x18 at 10,5):");
-        for (id, rect) in &layout.rects {
-            println!("  {}: {}x{} at ({},{})", id, rect.width, rect.height, rect.x, rect.y);
-        }
-
-        // Check title bar
-        let title_bar = layout.get("title_bar").expect("title_bar rect should exist");
-        assert_eq!(title_bar.y, 5, "title_bar should be at dialog top");
-
-        // Check files_list has reasonable height
-        let files_list = layout.get("files_list").expect("files_list rect should exist");
-        assert!(files_list.height >= 3, "files_list height {} should be >= 3", files_list.height);
-    }
 }

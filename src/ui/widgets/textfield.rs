@@ -4,8 +4,10 @@
 use crate::input::InputEvent;
 use crate::screen::Screen;
 use crate::terminal::Color;
-use super::layout::Rect;
-use super::widget::{Widget, EventResult, mouse_position};
+use crate::ui::layout::{Rect, SizeHint};
+use crate::ui::theme::Theme;
+use crate::ui::widget::{Widget, EventResult, mouse_position};
+use crate::ui::widget_tree::{TreeWidget, EventPhase};
 
 /// Colors for the text field
 #[derive(Clone, Copy)]
@@ -472,11 +474,91 @@ impl Widget for TextField {
         true
     }
 
-    fn has_focus(&self) -> bool {
-        self.focused
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+}
+
+/// TreeWidget implementation for use in widget trees
+/// Uses Theme for colors instead of TextFieldColors
+impl TreeWidget for TextField {
+    fn draw(&self, screen: &mut Screen, bounds: Rect, theme: &Theme) {
+        if bounds.width == 0 || bounds.height == 0 {
+            return;
+        }
+
+        let visible_width = bounds.width as usize;
+        let visible_text: String = self.text
+            .chars()
+            .skip(self.scroll_offset)
+            .take(visible_width)
+            .collect();
+
+        let selection_range = self.selection_range();
+
+        // Theme colors
+        let text_fg = if self.focused { theme.text_field_focused_fg } else { theme.text_field_fg };
+        let text_bg = if self.focused { theme.text_field_focused_bg } else { theme.text_field_bg };
+        let cursor_fg = theme.text_field_cursor_fg;
+        let cursor_bg = theme.text_field_cursor_bg;
+        let selection_fg = theme.text_field_selection_fg;
+        let selection_bg = theme.text_field_selection_bg;
+
+        // Draw each character
+        for i in 0..visible_width {
+            let text_index = self.scroll_offset + i;
+            let ch = visible_text.chars().nth(i).unwrap_or(' ');
+
+            // Determine colors
+            let (fg, bg) = if self.focused && text_index == self.cursor_pos {
+                // Cursor position
+                (cursor_fg, cursor_bg)
+            } else if let Some((sel_start, sel_end)) = selection_range {
+                if text_index >= sel_start && text_index < sel_end {
+                    // Selected
+                    (selection_fg, selection_bg)
+                } else {
+                    // Normal
+                    (text_fg, text_bg)
+                }
+            } else {
+                // Normal
+                (text_fg, text_bg)
+            };
+
+            screen.set(bounds.y, bounds.x + i as u16, ch, fg, bg);
+        }
+    }
+
+    fn handle_event(&mut self, event: &InputEvent, bounds: Rect, phase: EventPhase) -> EventResult {
+        if phase != EventPhase::Target {
+            return EventResult::Ignored;
+        }
+        Widget::handle_event(self, event, bounds)
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint {
+            min_width: 10, // Minimum reasonable text field width
+            min_height: 1,
+            flex: 1, // Text fields can expand
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
     }
 
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
