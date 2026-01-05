@@ -22,7 +22,6 @@ impl FindDialog {
             .with_size(55, 10)
             .with_min_size(40, 8);
         dialog.set_show_maximize(false);
-        dialog.set_chrome_interactive(false);
         Self { dialog, open: false }
     }
 

@@ -296,13 +296,12 @@ pub fn drag_to_vscroll(
     // Track size must match draw_vertical: height - 2 = (end_row - start_row + 1) - 2
     let track_size = end_row.saturating_sub(start_row).saturating_sub(1) as usize;
 
-    if track_size <= 1 || state.content_size <= 1 {
+    let max_scroll = state.max_scroll();
+    if track_size <= 1 || max_scroll == 0 {
         return 0;
     }
 
     let track_pos = drag_row.saturating_sub(track_start) as usize;
-    // Use content_size - 1 as max scroll (matches thumb_pos calculation)
-    let max_scroll = state.content_size.saturating_sub(1);
 
     // Map track position to scroll position (inverse of thumb_pos)
     (track_pos * max_scroll / (track_size - 1)).min(max_scroll)
@@ -325,13 +324,12 @@ pub fn drag_to_hscroll(
     // Track size must match draw_horizontal: width - 2 = (end_col - start_col + 1) - 2
     let track_size = end_col.saturating_sub(start_col).saturating_sub(1) as usize;
 
-    if track_size <= 1 || state.content_size <= 1 {
+    let max_scroll = state.max_scroll();
+    if track_size <= 1 || max_scroll == 0 {
         return 0;
     }
 
     let track_pos = drag_col.saturating_sub(track_start) as usize;
-    // Use content_size - 1 as max scroll (matches thumb_pos calculation)
-    let max_scroll = state.content_size.saturating_sub(1);
 
     // Map track position to scroll position (inverse of thumb_pos)
     (track_pos * max_scroll / (track_size - 1)).min(max_scroll)

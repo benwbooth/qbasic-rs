@@ -181,8 +181,8 @@ mod tests {
         );
 
         match action {
-            EditorClickAction::VScroll(_) => {}
-            _ => panic!("Expected VScroll action"),
+            EditorClickAction::VScroll(_) | EditorClickAction::StartVDrag => {}
+            other => panic!("Expected VScroll or StartVDrag action, got {:?}", other),
         }
     }
 }

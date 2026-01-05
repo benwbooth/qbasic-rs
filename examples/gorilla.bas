@@ -1,14 +1,18 @@
 ' GORILLA.BAS - A QBasic Classic
 ' Two gorillas throwing exploding bananas at each other
 
+SCREEN 12
+
 ' Initialize arrays
 DIM buildingX(15)
 DIM buildingW(15)
 DIM buildingH(15)
 
-' Constants
-scrWidth = 640
-scrHeight = 480
+' Get screen dimensions (updates on resize)
+scrWidth = SCREENWIDTH
+scrHeight = SCREENHEIGHT
+
+' Game settings
 gravity = 0.5
 numBuildings = 9
 score1 = 0
@@ -23,7 +27,8 @@ currentPlayer = 1
 WHILE gameOver = 0
     GOSUB DrawGame
 
-    ' Get player input
+    ' Get player input (use scaled gorilla size for positions)
+    gs = scrHeight / 12
     IF currentPlayer = 1 THEN
         LOCATE 1, 1
         COLOR 15
@@ -32,8 +37,8 @@ WHILE gameOver = 0
         INPUT "Angle: ", angle
         LOCATE 3, 1
         INPUT "Power: ", velocity
-        startX = gorilla1X + 20
-        startY = gorilla1Y - 10
+        startX = gorilla1X + gs / 2
+        startY = gorilla1Y - gs / 4
         direction = 1
     ELSE
         LOCATE 1, 50
@@ -43,8 +48,8 @@ WHILE gameOver = 0
         INPUT "Angle: ", angle
         LOCATE 3, 50
         INPUT "Power: ", velocity
-        startX = gorilla2X + 20
-        startY = gorilla2Y - 10
+        startX = gorilla2X + gs / 2
+        startY = gorilla2Y - gs / 4
         direction = -1
     END IF
 
@@ -111,37 +116,57 @@ END
 ' ================================
 
 StartNewRound:
+    ' Refresh screen dimensions
+    scrWidth = SCREENWIDTH
+    scrHeight = SCREENHEIGHT
+
     ' Generate random wind
     wind = (RND * 0.4) - 0.2
 
-    ' Generate random buildings
+    ' Generate random buildings scaled to screen width
+    buildingBaseW = scrWidth / numBuildings
     currentX = 0
     FOR i = 0 TO numBuildings - 1
-        buildingW(i) = 50 + INT(RND * 30)
-        buildingH(i) = 100 + INT(RND * 200)
+        buildingW(i) = buildingBaseW * 0.7 + INT(RND * buildingBaseW * 0.3)
+        buildingH(i) = scrHeight * 0.2 + INT(RND * scrHeight * 0.4)
         buildingX(i) = currentX
         currentX = currentX + buildingW(i)
     NEXT i
 
-    ' Place gorillas on buildings
-    gorilla1X = buildingX(1) + buildingW(1) / 2 - 20
-    gorilla1Y = scrHeight - buildingH(1) - 40
+    ' Place gorillas on buildings (use scaled gorilla size)
+    gs = scrHeight / 12
+    gorilla1X = buildingX(1) + buildingW(1) / 2 - gs / 2
+    gorilla1Y = scrHeight - buildingH(1) - gs
 
-    gorilla2X = buildingX(numBuildings - 2) + buildingW(numBuildings - 2) / 2 - 20
-    gorilla2Y = scrHeight - buildingH(numBuildings - 2) - 40
+    gorilla2X = buildingX(numBuildings - 2) + buildingW(numBuildings - 2) / 2 - gs / 2
+    gorilla2Y = scrHeight - buildingH(numBuildings - 2) - gs
 RETURN
 
 DrawGame:
+    ' Refresh screen dimensions for resize handling
+    scrWidth = SCREENWIDTH
+    scrHeight = SCREENHEIGHT
+
     ' Clear with blue sky
     COLOR 1
     LINE (0, 0)-(scrWidth, scrHeight), , BF
 
-    ' Draw sun
+    ' Draw sun (scaled position)
+    sunX = scrWidth - scrWidth / 8
+    sunY = scrHeight / 8
+    sunR = scrHeight / 12
     COLOR 14
-    CIRCLE (scrWidth - 80, 60), 40
-    PAINT (scrWidth - 80, 60), 14
+    CIRCLE (sunX, sunY), sunR
+    PAINT (sunX, sunY), 14
 
     ' Draw buildings
+    ' Window sizes scaled to screen
+    winW = scrHeight / 48
+    winH = scrHeight / 32
+    winSpaceX = scrHeight / 27
+    winSpaceY = scrHeight / 19
+    winMargin = scrHeight / 53
+
     FOR i = 0 TO numBuildings - 1
         bx = buildingX(i)
         bh = buildingH(i)
@@ -153,9 +178,9 @@ DrawGame:
 
         ' Windows (yellow)
         COLOR 14
-        FOR wy = scrHeight - bh + 15 TO scrHeight - 15 STEP 25
-            FOR wx = bx + 8 TO bx + bw - 15 STEP 18
-                LINE (wx, wy)-(wx + 10, wy + 15), , BF
+        FOR wy = scrHeight - bh + winMargin TO scrHeight - winMargin STEP winSpaceY
+            FOR wx = bx + winMargin TO bx + bw - winMargin - winW STEP winSpaceX
+                LINE (wx, wy)-(wx + winW, wy + winH), , BF
             NEXT wx
         NEXT wy
     NEXT i
@@ -177,52 +202,96 @@ DrawGame:
 RETURN
 
 DrawGorilla1:
+    ' Draw gorilla at gorilla1X, gorilla1Y (matching original GORILLA.BAS style)
+    gx = gorilla1X
+    gy = gorilla1Y
+    gs = scrHeight / 12
+    pi = 3.14159
     COLOR 6
-    ' Body
-    LINE (gorilla1X, gorilla1Y)-(gorilla1X + 40, gorilla1Y + 40), , BF
-    ' Head
-    CIRCLE (gorilla1X + 20, gorilla1Y - 15), 18
-    PAINT (gorilla1X + 20, gorilla1Y - 15), 6
-    ' Arms
-    LINE (gorilla1X - 8, gorilla1Y + 5)-(gorilla1X, gorilla1Y + 35), , BF
-    LINE (gorilla1X + 40, gorilla1Y + 5)-(gorilla1X + 48, gorilla1Y + 35), , BF
-    ' Eyes
-    COLOR 15
-    CIRCLE (gorilla1X + 14, gorilla1Y - 18), 3
-    CIRCLE (gorilla1X + 26, gorilla1Y - 18), 3
-    PAINT (gorilla1X + 14, gorilla1Y - 18), 15
-    PAINT (gorilla1X + 26, gorilla1Y - 18), 15
+
+    ' Head (two overlapping boxes like original)
+    LINE (gx, gy)-(gx + gs*0.7, gy + gs*0.4), , BF
+    LINE (gx - gs*0.1, gy + gs*0.15)-(gx + gs*0.8, gy + gs*0.3), , BF
+
+    ' Eyes/brow (dark line across face)
+    COLOR 0
+    LINE (gx + gs*0.05, gy + gs*0.15)-(gx + gs*0.55, gy + gs*0.15)
+
+    ' Neck
+    COLOR 6
+    LINE (gx + gs*0.05, gy + gs*0.45)-(gx + gs*0.55, gy + gs*0.45)
+
+    ' Upper body
+    LINE (gx - gs*0.35, gy + gs*0.5)-(gx + gs*1.0, gy + gs*0.85), , BF
+
+    ' Lower body
+    LINE (gx - gs*0.15, gy + gs*0.9)-(gx + gs*0.8, gy + gs*1.25), , BF
+
+    ' Left arm (down position)
+    CIRCLE (gx - gs*0.1, gy + gs*0.85), gs*0.5, 6, 3*pi/4, 5*pi/4
+
+    ' Right arm (down position)
+    CIRCLE (gx + gs*0.75, gy + gs*0.85), gs*0.5, 6, 7*pi/4, pi/4
+
+    ' Legs
+    CIRCLE (gx + gs*0.2, gy + gs*1.5), gs*0.5, 6, 3*pi/4, 9*pi/8
+    CIRCLE (gx + gs*0.45, gy + gs*1.5), gs*0.5, 6, 15*pi/8, pi/4
 RETURN
 
 DrawGorilla2:
+    ' Draw gorilla at gorilla2X, gorilla2Y (matching original GORILLA.BAS style)
+    gx = gorilla2X
+    gy = gorilla2Y
+    gs = scrHeight / 12
+    pi = 3.14159
     COLOR 6
-    ' Body
-    LINE (gorilla2X, gorilla2Y)-(gorilla2X + 40, gorilla2Y + 40), , BF
-    ' Head
-    CIRCLE (gorilla2X + 20, gorilla2Y - 15), 18
-    PAINT (gorilla2X + 20, gorilla2Y - 15), 6
-    ' Arms
-    LINE (gorilla2X - 8, gorilla2Y + 5)-(gorilla2X, gorilla2Y + 35), , BF
-    LINE (gorilla2X + 40, gorilla2Y + 5)-(gorilla2X + 48, gorilla2Y + 35), , BF
-    ' Eyes
-    COLOR 15
-    CIRCLE (gorilla2X + 14, gorilla2Y - 18), 3
-    CIRCLE (gorilla2X + 26, gorilla2Y - 18), 3
-    PAINT (gorilla2X + 14, gorilla2Y - 18), 15
-    PAINT (gorilla2X + 26, gorilla2Y - 18), 15
+
+    ' Head (two overlapping boxes like original)
+    LINE (gx, gy)-(gx + gs*0.7, gy + gs*0.4), , BF
+    LINE (gx - gs*0.1, gy + gs*0.15)-(gx + gs*0.8, gy + gs*0.3), , BF
+
+    ' Eyes/brow (dark line across face)
+    COLOR 0
+    LINE (gx + gs*0.05, gy + gs*0.15)-(gx + gs*0.55, gy + gs*0.15)
+
+    ' Neck
+    COLOR 6
+    LINE (gx + gs*0.05, gy + gs*0.45)-(gx + gs*0.55, gy + gs*0.45)
+
+    ' Upper body
+    LINE (gx - gs*0.35, gy + gs*0.5)-(gx + gs*1.0, gy + gs*0.85), , BF
+
+    ' Lower body
+    LINE (gx - gs*0.15, gy + gs*0.9)-(gx + gs*0.8, gy + gs*1.25), , BF
+
+    ' Left arm (down position)
+    CIRCLE (gx - gs*0.1, gy + gs*0.85), gs*0.5, 6, 3*pi/4, 5*pi/4
+
+    ' Right arm (down position)
+    CIRCLE (gx + gs*0.75, gy + gs*0.85), gs*0.5, 6, 7*pi/4, pi/4
+
+    ' Legs
+    CIRCLE (gx + gs*0.2, gy + gs*1.5), gs*0.5, 6, 3*pi/4, 9*pi/8
+    CIRCLE (gx + gs*0.45, gy + gs*1.5), gs*0.5, 6, 15*pi/8, pi/4
 RETURN
 
 ThrowBanana:
     hitTarget = 0
     hitGround = 0
 
+    ' Scale factors
+    gs = scrHeight / 12
+    bananaR = gs * 0.125
+
     ' Convert angle to radians
     pi = 3.14159
     radAngle = angle * pi / 180
 
-    ' Initial velocity components
-    vx = velocity * COS(radAngle) * direction * 0.3
-    vy = -velocity * SIN(radAngle) * 0.3
+    ' Initial velocity components (scale with screen)
+    velScale = scrHeight / 480
+    vx = velocity * COS(radAngle) * direction * 0.3 * velScale
+    vy = -velocity * SIN(radAngle) * 0.3 * velScale
+    gravityScaled = gravity * velScale
 
     ' Banana position
     bx = startX
@@ -231,8 +300,8 @@ ThrowBanana:
     ' Animation loop
     WHILE hitGround = 0 AND hitTarget = 0
         ' Update velocity (gravity and wind)
-        vy = vy + gravity
-        vx = vx + wind
+        vy = vy + gravityScaled
+        vx = vx + wind * velScale
 
         ' Update position
         bx = bx + vx
@@ -244,21 +313,21 @@ ThrowBanana:
         ELSE
             ' Draw banana
             COLOR 14
-            CIRCLE (bx, by), 5
+            CIRCLE (bx, by), bananaR
             PAINT (bx, by), 14
 
-            ' Check collision with opponent gorilla
+            ' Check collision with opponent gorilla (scaled hitbox)
             IF currentPlayer = 1 THEN
-                IF bx >= gorilla2X - 10 AND bx <= gorilla2X + 50 THEN
-                    IF by >= gorilla2Y - 35 AND by <= gorilla2Y + 45 THEN
+                IF bx >= gorilla2X - gs*0.25 AND bx <= gorilla2X + gs*1.25 THEN
+                    IF by >= gorilla2Y - gs*0.875 AND by <= gorilla2Y + gs*1.125 THEN
                         hitTarget = 1
                         explosionX = bx
                         explosionY = by
                     END IF
                 END IF
             ELSE
-                IF bx >= gorilla1X - 10 AND bx <= gorilla1X + 50 THEN
-                    IF by >= gorilla1Y - 35 AND by <= gorilla1Y + 45 THEN
+                IF bx >= gorilla1X - gs*0.25 AND bx <= gorilla1X + gs*1.25 THEN
+                    IF by >= gorilla1Y - gs*0.875 AND by <= gorilla1Y + gs*1.125 THEN
                         hitTarget = 1
                         explosionX = bx
                         explosionY = by
@@ -288,12 +357,15 @@ ThrowBanana:
 RETURN
 
 DrawExplosion:
-    ' Draw explosion animation
-    FOR radius = 10 TO 80 STEP 10
+    ' Draw explosion animation (scaled to screen)
+    expScale = scrHeight / 480
+    expMax = 80 * expScale
+    expStep = 10 * expScale
+    FOR radius = expStep TO expMax STEP expStep
         COLOR 12
         CIRCLE (explosionX, explosionY), radius
         COLOR 14
-        CIRCLE (explosionX, explosionY), radius - 5
+        CIRCLE (explosionX, explosionY), radius - expStep/2
         PAINT (explosionX, explosionY), 14
 
         FOR delay = 1 TO 500
@@ -302,7 +374,7 @@ DrawExplosion:
 
     ' Final flash
     COLOR 15
-    CIRCLE (explosionX, explosionY), 100
+    CIRCLE (explosionX, explosionY), expMax * 1.25
     PAINT (explosionX, explosionY), 15
 
     FOR delay = 1 TO 1000

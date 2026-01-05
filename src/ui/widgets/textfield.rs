@@ -434,7 +434,7 @@ impl Widget for TextField {
                     self.ensure_cursor_visible_with_width(visible_width);
                     return EventResult::Consumed;
                 }
-                InputEvent::CtrlA => {
+                InputEvent::Ctrl('a') => {
                     self.select_all();
                     return EventResult::Consumed;
                 }

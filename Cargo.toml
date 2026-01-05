@@ -7,3 +7,6 @@ description = "A faithful simulation of the MS-DOS QBasic IDE"
 [dependencies]
 libc = "0.2"
 arboard = "3"
+clap = { version = "4", features = ["derive"] }
+genawaiter = "0.99"
+async-recursion = "1.0"

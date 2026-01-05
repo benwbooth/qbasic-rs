@@ -320,9 +320,6 @@ impl Widget for ListView {
         let content = self.content_rect(bounds);
         let visible_height = content.height as usize;
 
-        // Ensure visibility is correct for current bounds
-        self.ensure_visible_with_height(visible_height);
-
         // Handle scrollbar dragging
         if self.scrollbar_dragging {
             match event {

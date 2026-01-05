@@ -41,7 +41,6 @@ impl MessageDialog {
             .with_size(50, 10)
             .with_min_size(30, 6);
         dialog.set_show_maximize(false);
-        dialog.set_chrome_interactive(false);
         dialog.focus_first();
         self.dialog = Some(dialog);
     }

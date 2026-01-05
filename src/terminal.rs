@@ -184,6 +184,10 @@ pub struct Terminal {
     stdout: io::Stdout,
     width: u16,
     height: u16,
+    /// Terminal width in pixels (0 if not available)
+    pixel_width: u16,
+    /// Terminal height in pixels (0 if not available)
+    pixel_height: u16,
 }
 
 impl Terminal {
@@ -193,6 +197,8 @@ impl Terminal {
             stdout: io::stdout(),
             width: 80,
             height: 25,
+            pixel_width: 0,
+            pixel_height: 0,
         };
 
         // Get terminal size
@@ -225,8 +231,16 @@ impl Terminal {
             if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 {
                 self.width = ws.ws_col;
                 self.height = ws.ws_row;
+                self.pixel_width = ws.ws_xpixel;
+                self.pixel_height = ws.ws_ypixel;
             }
         }
+    }
+
+    /// Get terminal pixel dimensions
+    /// Returns (width_pixels, height_pixels) or (0, 0) if not available
+    pub fn pixel_size(&self) -> (u16, u16) {
+        (self.pixel_width, self.pixel_height)
     }
 
     /// Enable raw mode (disable canonical mode, echo, etc.)
@@ -301,9 +315,11 @@ impl Terminal {
         self.write_raw("\x1b[0m")
     }
 
-    /// Clear entire screen
+    /// Clear entire screen (including any sixel graphics)
     pub fn clear(&mut self) -> io::Result<()> {
-        self.write_raw("\x1b[2J\x1b[H")
+        // ED2 (clear entire screen) + ED3 (clear scrollback) + cursor home
+        // ED3 helps ensure sixel graphics in scrollback are also cleared
+        self.write_raw("\x1b[2J\x1b[3J\x1b[H")
     }
 
     /// Clear to end of line

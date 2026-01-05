@@ -89,7 +89,6 @@ impl NewSubDialog {
             .with_size(45, 7)
             .with_min_size(30, 7);
         dialog.set_show_maximize(false);
-        dialog.set_chrome_interactive(false);
         Self { dialog, open: false }
     }
 
@@ -180,7 +179,6 @@ impl NewFunctionDialog {
             .with_size(45, 7)
             .with_min_size(30, 7);
         dialog.set_show_maximize(false);
-        dialog.set_chrome_interactive(false);
         Self { dialog, open: false }
     }
 
@@ -271,7 +269,6 @@ impl FindLabelDialog {
             .with_size(45, 7)
             .with_min_size(30, 7);
         dialog.set_show_maximize(false);
-        dialog.set_chrome_interactive(false);
         Self { dialog, open: false }
     }
 
@@ -358,7 +355,6 @@ impl CommandArgsDialog {
             .with_size(55, 7)
             .with_min_size(30, 7);
         dialog.set_show_maximize(false);
-        dialog.set_chrome_interactive(false);
         Self { dialog, open: false }
     }
 }
@@ -423,7 +419,6 @@ impl HelpPathDialog {
             .with_size(55, 7)
             .with_min_size(30, 7);
         dialog.set_show_maximize(false);
-        dialog.set_chrome_interactive(false);
         Self { dialog, open: false }
     }
 }

@@ -47,9 +47,6 @@ impl App {
     }
 
     pub fn run(&mut self) -> io::Result<()> {
-        // Load a sample program
-        self.widgets.editor.load(SAMPLE_PROGRAM);
-
         // Initialize dialog screen size before opening any dialogs
         let (width, height) = self.terminal.size();
         self.dialogs.set_screen_size(width, height);
@@ -69,8 +66,18 @@ impl App {
                 self.screen.resize(width, height);
                 self.screen.invalidate();
                 // Also resize graphics buffer if program is running
+                let (pixel_w, pixel_h) = self.terminal.pixel_size();
                 if matches!(self.state.run_state, RunState::Running | RunState::WaitingForInput) {
-                    self.interpreter.graphics.resize(width, height);
+                    self.interpreter.graphics_mut().resize_pixels(
+                        width as u32, height as u32,
+                        pixel_w as u32, pixel_h as u32
+                    );
+                }
+                // Update character cell size for sixel positioning
+                if pixel_w > 0 && pixel_h > 0 {
+                    let char_w = pixel_w as u32 / width as u32;
+                    let char_h = pixel_h as u32 / height as u32;
+                    self.screen.set_char_size(char_w, char_h);
                 }
                 self.dialogs.set_screen_size(width, height);
             }
@@ -98,11 +105,18 @@ impl App {
                     if self.interpreter.has_pending_input() {
                         // Waiting for INPUT statement - collect text input
                         if let Some(ref key) = maybe_key {
-                            // Check for Ctrl+C or Ctrl+Break to stop program
-                            if matches!(key, terminal::Key::Ctrl('c')) {
-                                self.state.run_state = RunState::Finished;
+                            // Check for Ctrl+C, Ctrl+Break, or Escape to stop program
+                            if matches!(key, terminal::Key::Ctrl('c') | terminal::Key::Escape) {
+                                self.state.show_output = false;
+                                self.state.run_state = RunState::Editing;
                                 self.state.set_status("Program stopped");
                                 self.current_program = None;
+                                self.interpreter.request_stop();
+                                self.interpreter.clear_pending_input();
+                                // Clear sixel mode and force full redraw of IDE
+                                self.screen.clear_sixel();
+                                self.screen.invalidate();
+                                self.clear_terminal_graphics();
                             } else if matches!(key, terminal::Key::Mouse(_)) {
                                 // Ignore mouse events
                             } else {
@@ -126,11 +140,17 @@ impl App {
                     } else {
                         // Waiting for INKEY$ - process key (or lack thereof) and continue execution
                         if let Some(ref key) = maybe_key {
-                            // Check for Ctrl+C or Ctrl+Break to stop program
-                            if matches!(key, terminal::Key::Ctrl('c')) {
-                                self.state.run_state = RunState::Finished;
+                            // Check for Ctrl+C, Ctrl+Break, or Escape to stop program
+                            if matches!(key, terminal::Key::Ctrl('c') | terminal::Key::Escape) {
+                                self.state.show_output = false;
+                                self.state.run_state = RunState::Editing;
                                 self.state.set_status("Program stopped");
                                 self.current_program = None;
+                                self.interpreter.request_stop();
+                                // Clear sixel mode and force full redraw of IDE
+                                self.screen.clear_sixel();
+                                self.screen.invalidate();
+                                self.clear_terminal_graphics();
                             } else if matches!(key, terminal::Key::Mouse(_)) {
                                 // Ignore mouse events for INKEY$ - just continue execution
                                 self.continue_after_input();
@@ -150,7 +170,7 @@ impl App {
                                 };
 
                                 if !key_str.is_empty() {
-                                    self.interpreter.pending_key = Some(key_str);
+                                    self.interpreter.set_pending_key(Some(key_str));
                                 }
                                 // Continue execution (INKEY$ should return empty string if no key available)
                                 self.continue_after_input();
@@ -175,6 +195,69 @@ impl App {
                 }
             }
 
+            // Continue execution if program is running
+            if self.state.run_state == RunState::Running {
+                if let Some(ref program) = self.current_program.clone() {
+                    use crate::basic::interpreter::ExecutionResult;
+                    match self.interpreter.continue_execution(&program) {
+                        Ok(ExecutionResult::Running) => {
+                            // Still running, will continue next iteration
+                        }
+                        Ok(ExecutionResult::Completed) => {
+                            for line in self.interpreter.take_output() {
+                                self.widgets.output.add_output(&line);
+                            }
+                            self.state.set_status("Program completed");
+                            self.state.current_line = None;
+                            self.state.run_state = RunState::Finished;
+                            self.current_program = None;
+                        }
+                        Ok(ExecutionResult::Stopped) => {
+                            for line in self.interpreter.take_output() {
+                                self.widgets.output.add_output(&line);
+                            }
+                            self.state.set_status("Program stopped");
+                            self.state.current_line = None;
+                            self.state.run_state = RunState::Finished;
+                            self.current_program = None;
+                        }
+                        Ok(ExecutionResult::NeedsInput) => {
+                            for line in self.interpreter.take_output() {
+                                self.widgets.output.add_output(&line);
+                            }
+                            self.state.run_state = RunState::WaitingForInput;
+                        }
+                        Ok(ExecutionResult::Breakpoint(line)) => {
+                            for output_line in self.interpreter.take_output() {
+                                self.widgets.output.add_output(&output_line);
+                            }
+                            self.state.current_line = Some(line);
+                            self.state.run_state = RunState::Paused;
+                            self.state.show_output = false;
+                            self.state.set_status(format!("Breakpoint hit at line {}", line + 1));
+                            self.widgets.editor.go_to_line(line + 1);
+                        }
+                        Ok(ExecutionResult::Stepped(line)) => {
+                            self.state.current_line = Some(line);
+                            self.state.run_state = RunState::Stepping;
+                        }
+                        Err(e) => {
+                            self.state.show_output = false;
+                            self.state.current_line = None;
+                            self.state.run_state = RunState::Editing;
+                            self.current_program = None;
+
+                            self.dialogs.message.set_message("Runtime Error".to_string(), e.clone());
+                            let mut ctx = DialogContext {
+                                editor: &mut self.widgets.editor,
+                                state: &mut self.state,
+                            };
+                            self.dialogs.message.open(&mut ctx);
+                        }
+                    }
+                }
+            }
+
             if !had_input && !matches!(self.state.run_state, RunState::Running | RunState::WaitingForInput) {
                 // No input this cycle and not running a program - sleep briefly to avoid 100% CPU
                 std::thread::sleep(std::time::Duration::from_millis(10));
@@ -195,7 +278,7 @@ impl App {
         if self.state.show_output {
             // Use graphics screen for running programs (uses LOCATE, COLOR, etc.)
             if matches!(self.state.run_state, RunState::Running | RunState::WaitingForInput | RunState::Finished) {
-                self.widgets.output.draw_graphics_screen(&mut self.screen, &self.interpreter.graphics, &self.state);
+                self.widgets.output.draw_graphics_screen(&mut self.screen, &mut self.interpreter.graphics_mut(), &self.state);
             } else {
                 self.widgets.output.draw_fullscreen(&mut self.screen, &self.state);
             }
@@ -263,6 +346,10 @@ impl App {
                 if is_keyboard {
                     self.state.show_output = false;
                     self.state.run_state = RunState::Editing;
+                    // Clear sixel mode and force full redraw of IDE
+                    self.screen.clear_sixel();
+                    self.screen.invalidate();
+                    self.clear_terminal_graphics();
                 }
                 return true;
             }
@@ -356,11 +443,11 @@ impl App {
 
         // Global shortcuts (only when no dialog is open)
         match &event {
-            InputEvent::AltX | InputEvent::CtrlQ => {
+            InputEvent::Alt('x') | InputEvent::Ctrl('q') => {
                 self.state.should_quit = true;
                 return true;
             }
-            InputEvent::F10 => {
+            InputEvent::F(10) => {
                 if !self.state.menu_open {
                     self.state.open_menu();
                 } else {
@@ -368,7 +455,7 @@ impl App {
                 }
                 return true;
             }
-            InputEvent::F1 => {
+            InputEvent::F(1) => {
                 self.dialogs.help.set_topic("General".to_string());
                 let mut ctx = DialogContext {
                     editor: &mut self.widgets.editor,
@@ -377,29 +464,29 @@ impl App {
                 self.dialogs.help.open(&mut ctx);
                 return true;
             }
-            InputEvent::F4 => {
+            InputEvent::F(4) => {
                 // Toggle output window
                 self.state.show_output = !self.state.show_output;
                 return true;
             }
-            InputEvent::F5 => {
+            InputEvent::F(5) => {
                 self.run_program();
                 return true;
             }
-            InputEvent::F2 => {
+            InputEvent::F(2) => {
                 self.show_subs_list();
                 return true;
             }
-            InputEvent::F6 => {
+            InputEvent::F(6) => {
                 self.state.toggle_focus();
                 return true;
             }
-            InputEvent::F3 => {
+            InputEvent::F(3) => {
                 self.repeat_find();
                 return true;
             }
             // Search shortcuts
-            InputEvent::CtrlF => {
+            InputEvent::Ctrl('f') => {
                 let mut ctx = DialogContext {
                     editor: &mut self.widgets.editor,
                     state: &mut self.state,
@@ -407,7 +494,7 @@ impl App {
                 self.dialogs.find.open(&mut ctx);
                 return true;
             }
-            InputEvent::CtrlG => {
+            InputEvent::Ctrl('g') => {
                 let mut ctx = DialogContext {
                     editor: &mut self.widgets.editor,
                     state: &mut self.state,
@@ -416,11 +503,11 @@ impl App {
                 return true;
             }
             // File shortcuts
-            InputEvent::CtrlS => {
+            InputEvent::Ctrl('s') => {
                 self.save_file();
                 return true;
             }
-            InputEvent::CtrlO => {
+            InputEvent::Ctrl('o') => {
                 let mut ctx = DialogContext {
                     editor: &mut self.widgets.editor,
                     state: &mut self.state,
@@ -428,25 +515,25 @@ impl App {
                 self.dialogs.file_open.open(&mut ctx);
                 return true;
             }
-            InputEvent::CtrlN => {
+            InputEvent::Ctrl('n') => {
                 self.new_file();
                 return true;
             }
             // Clipboard operations
-            InputEvent::CtrlC => {
+            InputEvent::Ctrl('c') => {
                 self.clipboard_copy();
                 return true;
             }
-            InputEvent::CtrlX => {
+            InputEvent::Ctrl('x') => {
                 self.clipboard_cut();
                 return true;
             }
-            InputEvent::CtrlV => {
+            InputEvent::Ctrl('v') => {
                 self.clipboard_paste();
                 return true;
             }
             // Undo/Redo
-            InputEvent::CtrlZ => {
+            InputEvent::Ctrl('z') => {
                 if self.widgets.editor.undo() {
                     self.state.set_status("Undo");
                 } else {
@@ -454,7 +541,7 @@ impl App {
                 }
                 return true;
             }
-            InputEvent::CtrlY => {
+            InputEvent::Ctrl('y') => {
                 if self.widgets.editor.redo() {
                     self.state.set_status("Redo");
                 } else {
@@ -773,7 +860,7 @@ impl App {
         }
     }
 
-    fn load_file_from_path(&mut self, path: std::path::PathBuf) {
+    pub fn load_file_from_path(&mut self, path: std::path::PathBuf) {
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 self.widgets.editor.load(&content);
@@ -890,10 +977,23 @@ impl App {
             Ok(program) => {
                 self.interpreter.reset();
 
-                // Size graphics buffer to terminal size
-                let (width, height) = self.terminal.size();
-                self.interpreter.graphics.resize(width, height);
-                self.interpreter.graphics.cls();
+                // Size graphics buffer to terminal size (using actual pixel dimensions)
+                let (cols, rows) = self.terminal.size();
+                let (pixel_w, pixel_h) = self.terminal.pixel_size();
+                self.interpreter.graphics_mut().resize_pixels(
+                    cols as u32, rows as u32,
+                    pixel_w as u32, pixel_h as u32
+                );
+                // Enable graphics mode so PRINT/LOCATE/COLOR work with screen buffer
+                self.interpreter.graphics_mut().mode = 12;
+                self.interpreter.graphics_mut().cls();
+
+                // Update character cell size for sixel positioning
+                if pixel_w > 0 && pixel_h > 0 {
+                    let char_w = pixel_w as u32 / cols as u32;
+                    let char_h = pixel_h as u32 / rows as u32;
+                    self.screen.set_char_size(char_w, char_h);
+                }
 
                 // Pass breakpoints to interpreter
                 let bp_lines: Vec<usize> = self.state.breakpoints
@@ -916,6 +1016,15 @@ impl App {
                             self.widgets.output.add_output(&line);
                         }
                         self.state.set_status(format!("Program completed ({} stmts)", stmt_count));
+                        self.state.current_line = None;
+                        self.state.run_state = RunState::Finished;
+                        self.current_program = None;
+                    }
+                    Ok(ExecutionResult::Stopped) => {
+                        for line in self.interpreter.take_output() {
+                            self.widgets.output.add_output(&line);
+                        }
+                        self.state.set_status("Program stopped");
                         self.state.current_line = None;
                         self.state.run_state = RunState::Finished;
                         self.current_program = None;
@@ -943,19 +1052,37 @@ impl App {
                         // Yield to allow UI update and keyboard input
                         self.state.run_state = RunState::WaitingForInput;
                     }
+                    Ok(ExecutionResult::Running) => {
+                        // Still running, main loop will continue execution
+                        // State is already Running
+                    }
                     Err(e) => {
-                        self.widgets.output.add_output(&format!("Runtime error: {}", e));
-                        self.state.set_status(format!("Error: {}", e));
+                        // Show runtime error in popup dialog
+                        self.state.show_output = false;
                         self.state.current_line = None;
-                        self.state.run_state = RunState::Finished;
+                        self.state.run_state = RunState::Editing;
                         self.current_program = None;
+
+                        self.dialogs.message.set_message("Runtime Error".to_string(), e.clone());
+                        let mut ctx = DialogContext {
+                            editor: &mut self.widgets.editor,
+                            state: &mut self.state,
+                        };
+                        self.dialogs.message.open(&mut ctx);
                     }
                 }
             }
             Err(e) => {
-                self.widgets.output.add_output(&format!("Syntax error: {}", e));
-                self.state.set_status(format!("Syntax error: {}", e));
-                self.state.run_state = RunState::Finished;
+                // Show syntax error in popup dialog
+                self.state.show_output = false;
+                self.state.run_state = RunState::Editing;
+
+                self.dialogs.message.set_message("Syntax Error".to_string(), e.clone());
+                let mut ctx = DialogContext {
+                    editor: &mut self.widgets.editor,
+                    state: &mut self.state,
+                };
+                self.dialogs.message.open(&mut ctx);
             }
         }
     }
@@ -1001,16 +1128,25 @@ impl App {
                 match result {
                     Ok(ExecutionResult::Completed) => {
                         for line in self.interpreter.take_output() {
-                            self.widgets.immediate.add_output(&line);
+                            self.widgets.output.add_output(&line);
                         }
                         self.state.set_status("Program completed");
                         self.state.current_line = None;
                         self.state.run_state = RunState::Editing;
                         self.current_program = None;
                     }
+                    Ok(ExecutionResult::Stopped) => {
+                        for line in self.interpreter.take_output() {
+                            self.widgets.output.add_output(&line);
+                        }
+                        self.state.set_status("Program stopped");
+                        self.state.current_line = None;
+                        self.state.run_state = RunState::Editing;
+                        self.current_program = None;
+                    }
                     Ok(ExecutionResult::Breakpoint(line)) | Ok(ExecutionResult::Stepped(line)) => {
                         for output_line in self.interpreter.take_output() {
-                            self.widgets.immediate.add_output(&output_line);
+                            self.widgets.output.add_output(&output_line);
                         }
                         self.state.current_line = Some(line);
                         self.state.run_state = RunState::Stepping;
@@ -1019,22 +1155,38 @@ impl App {
                     }
                     Ok(ExecutionResult::NeedsInput) => {
                         for output_line in self.interpreter.take_output() {
-                            self.widgets.immediate.add_output(&output_line);
+                            self.widgets.output.add_output(&output_line);
                         }
                         self.state.run_state = RunState::WaitingForInput;
                     }
+                    Ok(ExecutionResult::Running) => {
+                        self.state.run_state = RunState::Running;
+                    }
                     Err(e) => {
-                        self.widgets.immediate.add_output(&format!("Runtime error: {}", e));
-                        self.state.set_status(format!("Error: {}", e));
+                        self.state.show_output = false;
                         self.state.current_line = None;
                         self.state.run_state = RunState::Editing;
                         self.current_program = None;
+
+                        self.dialogs.message.set_message("Runtime Error".to_string(), e.clone());
+                        let mut ctx = DialogContext {
+                            editor: &mut self.widgets.editor,
+                            state: &mut self.state,
+                        };
+                        self.dialogs.message.open(&mut ctx);
                     }
                 }
             }
             Err(e) => {
-                self.widgets.immediate.add_output(&format!("Syntax error: {}", e));
-                self.state.set_status(format!("Syntax error: {}", e));
+                self.state.show_output = false;
+                self.state.run_state = RunState::Editing;
+
+                self.dialogs.message.set_message("Syntax Error".to_string(), e.clone());
+                let mut ctx = DialogContext {
+                    editor: &mut self.widgets.editor,
+                    state: &mut self.state,
+                };
+                self.dialogs.message.open(&mut ctx);
             }
         }
     }
@@ -1053,6 +1205,15 @@ impl App {
                     self.widgets.output.add_output(&line);
                 }
                 self.state.set_status("Program completed");
+                self.state.current_line = None;
+                self.state.run_state = RunState::Finished;
+                self.current_program = None;
+            }
+            Ok(ExecutionResult::Stopped) => {
+                for line in self.interpreter.take_output() {
+                    self.widgets.output.add_output(&line);
+                }
+                self.state.set_status("Program stopped");
                 self.state.current_line = None;
                 self.state.run_state = RunState::Finished;
                 self.current_program = None;
@@ -1077,20 +1238,26 @@ impl App {
                 }
                 self.state.run_state = RunState::WaitingForInput;
             }
+            Ok(ExecutionResult::Running) => {
+                self.state.run_state = RunState::Running;
+            }
             Err(e) => {
-                self.widgets.output.add_output(&format!("Runtime error: {}", e));
-                self.state.set_status(format!("Error: {}", e));
+                self.state.show_output = false;
                 self.state.current_line = None;
-                self.state.run_state = RunState::Finished;
+                self.state.run_state = RunState::Editing;
                 self.current_program = None;
+
+                self.dialogs.message.set_message("Runtime Error".to_string(), e.clone());
+                let mut ctx = DialogContext {
+                    editor: &mut self.widgets.editor,
+                    state: &mut self.state,
+                };
+                self.dialogs.message.open(&mut ctx);
             }
         }
     }
 
     fn execute_immediate(&mut self, cmd: &str) {
-        // Echo the command
-        self.widgets.immediate.add_output(&format!("? {}", cmd));
-
         // Try to parse and execute as expression or statement
         let source = cmd.trim();
         let mut lexer = Lexer::new(source);
@@ -1101,10 +1268,10 @@ impl App {
         if let Ok(expr) = parser.parse_expression() {
             match self.interpreter.eval_expr(&expr) {
                 Ok(value) => {
-                    self.widgets.immediate.add_output(&value.to_string());
+                    self.widgets.output.add_output(&value.to_string());
                 }
                 Err(e) => {
-                    self.widgets.immediate.add_output(&format!("Error: {}", e));
+                    self.widgets.output.add_output(&format!("Error: {}", e));
                 }
             }
         } else {
@@ -1116,15 +1283,15 @@ impl App {
             match parser2.parse() {
                 Ok(stmts) => {
                     if let Err(e) = self.interpreter.execute(&stmts) {
-                        self.widgets.immediate.add_output(&format!("Error: {}", e));
+                        self.widgets.output.add_output(&format!("Error: {}", e));
                     } else {
                         for line in self.interpreter.take_output() {
-                            self.widgets.immediate.add_output(&line);
+                            self.widgets.output.add_output(&line);
                         }
                     }
                 }
                 Err(e) => {
-                    self.widgets.immediate.add_output(&format!("Error: {}", e));
+                    self.widgets.output.add_output(&format!("Error: {}", e));
                 }
             }
         }
@@ -1347,62 +1514,20 @@ impl App {
         };
         self.dialogs.help.open(&mut ctx);
     }
+
+    /// Clear terminal graphics (sixel) by filling the screen with spaces
+    fn clear_terminal_graphics(&mut self) {
+        let (width, height) = self.screen.size();
+        // Clear screen and scrollback
+        let _ = self.terminal.write_raw("\x1b[H\x1b[2J\x1b[3J");
+        // Set default colors and fill screen with spaces to overwrite any sixel remnants
+        let _ = self.terminal.write_raw("\x1b[0m");
+        for _ in 0..height {
+            for _ in 0..width {
+                let _ = self.terminal.write_raw(" ");
+            }
+        }
+        let _ = self.terminal.write_raw("\x1b[H");
+        let _ = self.terminal.flush();
+    }
 }
-
-/// Sample program to show on startup
-const SAMPLE_PROGRAM: &str = r####"' ============================================
-' Welcome to QBasic!
-' ============================================
-' This is a demo program showing various
-' features of the QBasic interpreter.
-' ============================================
-
-CLS
-PRINT "Hello, World!"
-PRINT
-
-' Simple counting loop
-PRINT "Counting from 1 to 10:"
-FOR i = 1 TO 10
-    PRINT "  Count:"; i
-NEXT i
-PRINT
-
-' Nested loops example
-PRINT "Multiplication table (1-5):"
-FOR i = 1 TO 5
-    FOR j = 1 TO 5
-        PRINT USING "###"; i * j;
-    NEXT j
-    PRINT
-NEXT i
-PRINT
-
-' String manipulation
-name$ = "QBasic"
-PRINT "Welcome to "; name$; "!"
-PRINT "String length:"; LEN(name$)
-PRINT
-
-' Simple math
-a = 10
-b = 3
-PRINT "Math operations:"
-PRINT "  10 + 3 ="; a + b
-PRINT "  10 - 3 ="; a - b
-PRINT "  10 * 3 ="; a * b
-PRINT "  10 / 3 ="; a / b
-PRINT "  10 MOD 3 ="; a MOD 3
-PRINT
-
-' ============================================
-' Keyboard shortcuts:
-' ============================================
-' F5        - Run program
-' F6        - Switch to Immediate window
-' F1        - Help
-' Ctrl+O    - Open file
-' Ctrl+S    - Save file
-' Alt+X     - Exit
-' ============================================
-"####;

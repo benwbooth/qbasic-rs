@@ -130,27 +130,42 @@ impl OutputWindow {
     }
 
     /// Draw the graphics text screen fullscreen
-    pub fn draw_graphics_screen(&self, screen: &mut Screen, graphics: &GraphicsMode, state: &AppState) {
+    pub fn draw_graphics_screen(&self, screen: &mut Screen, graphics: &mut GraphicsMode, state: &AppState) {
         let (term_width, term_height) = screen.size();
 
-        // Check if in graphics mode (SCREEN 7, 12, 13, etc.)
+        // Check if screen needs clearing (mode changed, first render, etc.)
+        if graphics.take_needs_clear() {
+            screen.request_sixel_clear();
+        }
+
+        // Graphics mode - render sixel filling the whole terminal
         if graphics.is_graphics_mode() {
-            // Render pixel graphics using sixel
-            let scale = 1; // 1:1 pixel mapping
-            let sixel_data = graphics.render_sixel(scale);
-            screen.set_sixel(sixel_data);
+            // Note: graphics buffer is resized in run_program() and main loop resize handler
+            // using actual terminal pixel dimensions from ioctl
+
+            // Use differential sixel updates - only encode changed regions
+            // Get char size for proper alignment of partial updates
+            let (char_w, char_h) = screen.char_size();
+            let updates = graphics.render_sixel_differential_aligned(term_width, term_height, char_w, char_h);
+
+            // Add each update to the screen
+            let gen = graphics.generation();
+            for (sixel_data, x, y, w, h) in updates {
+                screen.add_sixel_update(sixel_data, x, y, w, h, gen);
+            }
+
+            // Also set position info for border handling
+            screen.set_sixel_position(0, 0, term_height, term_width);
 
             // Also render text overlay from the text screen buffer
             // This allows PRINT/LOCATE/INPUT to work in graphics mode
+            // We set ALL cells (including spaces) so that deleted chars get cleared
             for row in 1..=term_height.min(graphics.text_rows) {
                 for col in 1..=term_width.min(graphics.text_cols) {
                     let cell = graphics.get_char(row, col);
-                    // Only set non-space chars for overlay
-                    if cell.char != ' ' {
-                        let fg = dos_to_color(cell.fg);
-                        let bg = dos_to_color(cell.bg);
-                        screen.set(row, col, cell.char, fg, bg);
-                    }
+                    let fg = dos_to_color(cell.fg);
+                    // Use black background for text overlay
+                    screen.set(row, col, cell.char, fg, Color::Black);
                 }
             }
 

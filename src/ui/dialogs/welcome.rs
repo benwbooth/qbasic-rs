@@ -34,7 +34,7 @@ impl WelcomeDialog {
             x: 0,
             y: 0,
             width: 60,
-            height: 12,
+            height: 10,
             open: false,
             screen_size: (80, 25),
             show_help_on_close: false,
@@ -47,10 +47,18 @@ impl WelcomeDialog {
             .child(WidgetNode::leaf("spacer1", Spacer::fixed(1)))
             .leaf("subtitle", Label::new("A BASIC interpreter written in Rust").centered())
             .child(WidgetNode::leaf("flex_spacer", Spacer::new()))
+            .child(WidgetNode::leaf("spacer_above_hr", Spacer::fixed(1)))
             .child(WidgetNode::leaf("hr", HRule::t_connector()))
-            .leaf("start_btn", Button::new("Press Enter to see the Survival Guide", "start"))
-            .leaf("exit_btn", Button::new("Press ESC to clear this dialog box", "cancel"))
-            .padding(1)
+            .child(WidgetNode::hstack("start_row")
+                .child(WidgetNode::leaf("sl1", Spacer::new()))
+                .leaf("start_btn", Button::new("Press Enter to see the Survival Guide", "start"))
+                .child(WidgetNode::leaf("sr1", Spacer::new()))
+                .build())
+            .child(WidgetNode::hstack("exit_row")
+                .child(WidgetNode::leaf("sl2", Spacer::new()))
+                .leaf("exit_btn", Button::new("Press ESC to clear this dialog box", "cancel"))
+                .child(WidgetNode::leaf("sr2", Spacer::new()))
+                .build())
             .build()
     }
 
@@ -61,9 +69,9 @@ impl WelcomeDialog {
 
     fn content_rect(&self) -> Rect {
         Rect::new(
-            self.x + 1,
+            self.x,
             self.y + 1,
-            self.width.saturating_sub(2),
+            self.width,
             self.height.saturating_sub(2),
         )
     }

@@ -23,7 +23,6 @@ impl DisplayOptionsDialog {
             .with_size(50, 14)
             .with_min_size(40, 10);
         dialog.set_show_maximize(false);
-        dialog.set_chrome_interactive(false);
         Self { dialog, open: false }
     }
 

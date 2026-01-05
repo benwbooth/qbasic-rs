@@ -26,7 +26,6 @@ impl NewProgramDialog {
             .with_size(40, 8)
             .with_min_size(30, 6);
         dialog.set_show_maximize(false);
-        dialog.set_chrome_interactive(false);
         Self { dialog, open: false }
     }
 

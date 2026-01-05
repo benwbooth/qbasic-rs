@@ -160,12 +160,14 @@ pub enum Stmt {
         box_fill: Option<bool>, // None=line, Some(false)=box, Some(true)=filled box
     },
 
-    /// CIRCLE (x, y), radius [, color]
+    /// CIRCLE (x, y), radius [, color] [, start] [, end]
     Circle {
         x: Expr,
         y: Expr,
         radius: Expr,
         color: Option<Expr>,
+        start_angle: Option<Expr>,
+        end_angle: Option<Expr>,
     },
 
     /// PAINT (x, y), color
@@ -666,7 +668,12 @@ impl Parser {
             }
         }
 
-        let else_branch = if matches!(self.peek(), TokenKind::Keyword(Keyword::Else)) {
+        let else_branch = if matches!(self.peek(), TokenKind::Keyword(Keyword::ElseIf)) {
+            // ELSEIF becomes a nested IF in the else branch
+            self.advance(); // consume ELSEIF
+            let nested_if = self.parse_elseif()?;
+            Some(vec![nested_if])
+        } else if matches!(self.peek(), TokenKind::Keyword(Keyword::Else)) {
             self.advance();
             self.skip_newlines();
             let mut else_stmts = Vec::new();
@@ -681,12 +688,77 @@ impl Parser {
                     }
                 }
             }
+            // Consume END IF
+            self.consume_end_if();
             Some(else_stmts)
         } else {
+            // Consume END IF
+            self.consume_end_if();
             None
         };
 
-        // Consume END IF
+        self.pop_context();
+        Ok(Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        })
+    }
+
+    /// Parse ELSEIF clause (similar to IF but handles chained ELSEIF/ELSE)
+    fn parse_elseif(&mut self) -> Result<Stmt, String> {
+        let condition = self.parse_expression()?;
+        self.expect(TokenKind::Keyword(Keyword::Then))?;
+        self.skip_newlines();
+
+        let mut then_branch = Vec::new();
+        loop {
+            self.skip_newlines();
+            match self.peek() {
+                TokenKind::Keyword(Keyword::Else) | TokenKind::Keyword(Keyword::ElseIf) | TokenKind::Keyword(Keyword::EndIf) => break,
+                TokenKind::Keyword(Keyword::End) if self.is_end_if() => break,
+                TokenKind::Eof => break,
+                _ => {
+                    then_branch.extend(self.parse_statement()?);
+                }
+            }
+        }
+
+        let else_branch = if matches!(self.peek(), TokenKind::Keyword(Keyword::ElseIf)) {
+            self.advance();
+            let nested_if = self.parse_elseif()?;
+            Some(vec![nested_if])
+        } else if matches!(self.peek(), TokenKind::Keyword(Keyword::Else)) {
+            self.advance();
+            self.skip_newlines();
+            let mut else_stmts = Vec::new();
+            loop {
+                self.skip_newlines();
+                match self.peek() {
+                    TokenKind::Keyword(Keyword::EndIf) => break,
+                    TokenKind::Keyword(Keyword::End) if self.is_end_if() => break,
+                    TokenKind::Eof => break,
+                    _ => {
+                        else_stmts.extend(self.parse_statement()?);
+                    }
+                }
+            }
+            self.consume_end_if();
+            Some(else_stmts)
+        } else {
+            self.consume_end_if();
+            None
+        };
+
+        Ok(Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        })
+    }
+
+    /// Consume END IF tokens
+    fn consume_end_if(&mut self) {
         if matches!(self.peek(), TokenKind::Keyword(Keyword::End)) {
             self.advance();
             if matches!(self.peek(), TokenKind::Keyword(Keyword::If)) {
@@ -695,13 +767,6 @@ impl Parser {
         } else if matches!(self.peek(), TokenKind::Keyword(Keyword::EndIf)) {
             self.advance();
         }
-
-        self.pop_context();
-        Ok(Stmt::If {
-            condition,
-            then_branch,
-            else_branch,
-        })
     }
 
     fn parse_for(&mut self) -> Result<Stmt, String> {
@@ -1026,7 +1091,23 @@ impl Parser {
             None
         };
 
-        Ok(Stmt::Circle { x, y, radius, color })
+        // Parse optional start angle
+        let start_angle = if matches!(self.peek(), TokenKind::Comma) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        // Parse optional end angle
+        let end_angle = if matches!(self.peek(), TokenKind::Comma) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        Ok(Stmt::Circle { x, y, radius, color, start_angle, end_angle })
     }
 
     fn parse_paint(&mut self) -> Result<Stmt, String> {

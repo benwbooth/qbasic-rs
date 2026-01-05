@@ -25,7 +25,6 @@ impl FileSaveDialog {
             .with_size(60, 18)
             .with_min_size(40, 12);
         dialog.set_show_maximize(false);
-        dialog.set_chrome_interactive(false);
 
         Self {
             dialog,

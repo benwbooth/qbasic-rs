@@ -23,7 +23,6 @@ impl PrintDialog {
             .with_size(50, 10)
             .with_min_size(30, 8);
         dialog.set_show_maximize(false);
-        dialog.set_chrome_interactive(false);
         Self { dialog, selected: 0, open: false }
     }
 

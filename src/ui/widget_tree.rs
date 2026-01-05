@@ -105,7 +105,9 @@ impl WidgetNode {
                 if hint.min_height > 0 {
                     item.min_height = hint.min_height;
                 }
-                if hint.flex > 0 {
+                // Only use flex height if widget wants to expand vertically (min_height > 1)
+                // A single-line widget with flex > 0 wants to expand width, not height
+                if hint.flex > 0 && hint.min_height > 1 {
                     item.height = Size::Flex(hint.flex);
                 } else if hint.min_height > 0 {
                     item.height = Size::Fixed(hint.min_height);
@@ -120,14 +122,43 @@ impl WidgetNode {
 
                 match layout {
                     ContainerLayout::VStack { spacing, padding } => {
-                        LayoutItem::vstack(child_items)
+                        // VStack: min_width = max of children, min_height = sum of children + spacing
+                        let min_width = child_items.iter().map(|c| c.min_width).max().unwrap_or(0);
+                        let spacing_total = (*spacing) * (child_items.len().saturating_sub(1) as u16);
+                        let min_height: u16 = child_items.iter()
+                            .map(|c| c.min_height)
+                            .sum::<u16>()
+                            .saturating_add(spacing_total)
+                            .saturating_add(padding * 2);
+                        let mut item = LayoutItem::vstack(child_items)
                             .spacing(*spacing)
-                            .padding(*padding)
+                            .padding(*padding);
+                        item.min_width = min_width.saturating_add(padding * 2);
+                        item.min_height = min_height;
+                        item
                     }
                     ContainerLayout::HStack { spacing, padding } => {
-                        LayoutItem::hstack(child_items)
+                        // HStack: min_height = max of children, min_width = sum of children + spacing
+                        let min_height = child_items.iter().map(|c| c.min_height).max().unwrap_or(0);
+                        let spacing_total = (*spacing) * (child_items.len().saturating_sub(1) as u16);
+                        let min_width: u16 = child_items.iter()
+                            .map(|c| c.min_width)
+                            .sum::<u16>()
+                            .saturating_add(spacing_total)
+                            .saturating_add(padding * 2);
+                        // Check if any child wants to expand vertically
+                        let has_flex_height = child_items.iter().any(|c| matches!(c.height, Size::Flex(_)));
+                        let mut item = LayoutItem::hstack(child_items)
                             .spacing(*spacing)
-                            .padding(*padding)
+                            .padding(*padding);
+                        item.min_width = min_width;
+                        let total_min_height = min_height.saturating_add(padding * 2);
+                        item.min_height = total_min_height;
+                        // Only use flex height if children want to expand, otherwise fixed
+                        if !has_flex_height {
+                            item.height = Size::Fixed(total_min_height);
+                        }
+                        item
                     }
                 }
             }

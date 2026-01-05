@@ -3,7 +3,7 @@
 use crate::terminal::{Key, MouseEvent, MouseButton};
 
 /// Processed input events for the application
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[allow(dead_code)]
 pub enum InputEvent {
     /// Mouse click
@@ -21,6 +21,10 @@ pub enum InputEvent {
     ScrollRight { row: u16, col: u16 },
     /// Regular character input
     Char(char),
+    /// Alt + character
+    Alt(char),
+    /// Ctrl + character
+    Ctrl(char),
     /// Navigation keys
     CursorUp,
     CursorDown,
@@ -39,7 +43,7 @@ pub enum InputEvent {
     ShiftEnd,
     ShiftSpace,
     CtrlSpace,
-    /// Ctrl+Navigation for selection
+    /// Ctrl+Navigation
     CtrlUp,
     CtrlDown,
     CtrlLeft,
@@ -48,6 +52,17 @@ pub enum InputEvent {
     CtrlEnd,
     CtrlPageUp,
     CtrlPageDown,
+    CtrlBackspace,
+    CtrlDelete,
+    /// Ctrl+Shift combinations
+    CtrlShiftLeft,
+    CtrlShiftRight,
+    CtrlShiftHome,
+    CtrlShiftEnd,
+    CtrlShiftK,
+    /// Alt+Navigation
+    AltUp,
+    AltDown,
     /// Editing keys
     Enter,
     Backspace,
@@ -58,52 +73,7 @@ pub enum InputEvent {
     /// Escape key
     Escape,
     /// Function keys
-    F1,  // Help
-    F2,  // SUBs
-    F3,  // Repeat last find
-    F4,  // View output
-    F5,  // Run
-    F6,  // Next window
-    F7,  // Step (debug)
-    F8,  // Step over (debug)
-    F9,  // Toggle breakpoint
-    F10, // Menu
-    /// Menu shortcuts
-    AltF,  // File menu
-    AltE,  // Edit menu
-    AltV,  // View menu
-    AltS,  // Search menu
-    AltR,  // Run menu
-    AltD,  // Debug menu
-    AltO,  // Options menu
-    AltH,  // Help menu
-    AltX,  // Exit
-    /// Ctrl shortcuts
-    CtrlA, // Select all
-    CtrlC, // Copy
-    CtrlV, // Paste
-    CtrlX, // Cut
-    CtrlS, // Save
-    CtrlO, // Open
-    CtrlN, // New
-    CtrlF, // Find
-    CtrlG, // Go to line
-    CtrlZ, // Undo
-    CtrlY, // Redo
-    CtrlQ, // Quit
-    CtrlBackspace, // Delete word left
-    CtrlDelete, // Delete word right
-    /// Ctrl+Shift for selection
-    CtrlShiftLeft,
-    CtrlShiftRight,
-    CtrlShiftHome,
-    CtrlShiftEnd,
-    CtrlShiftK, // Delete line
-    /// Line operations
-    CtrlD, // Duplicate line
-    CtrlSlash, // Toggle comment
-    AltUp, // Move line up
-    AltDown, // Move line down
+    F(u8),
     /// Other
     Unknown,
     UnknownBytes(Vec<u8>),
@@ -154,39 +124,9 @@ impl From<Key> for InputEvent {
             Key::CtrlShiftK => InputEvent::CtrlShiftK,
             Key::AltUp => InputEvent::AltUp,
             Key::AltDown => InputEvent::AltDown,
-            Key::Ctrl('d') => InputEvent::CtrlD,
-            Key::Ctrl('/') => InputEvent::CtrlSlash,
-            Key::F(1) => InputEvent::F1,
-            Key::F(2) => InputEvent::F2,
-            Key::F(3) => InputEvent::F3,
-            Key::F(4) => InputEvent::F4,
-            Key::F(5) => InputEvent::F5,
-            Key::F(6) => InputEvent::F6,
-            Key::F(7) => InputEvent::F7,
-            Key::F(8) => InputEvent::F8,
-            Key::F(9) => InputEvent::F9,
-            Key::F(10) => InputEvent::F10,
-            Key::Alt('f') => InputEvent::AltF,
-            Key::Alt('e') => InputEvent::AltE,
-            Key::Alt('v') => InputEvent::AltV,
-            Key::Alt('s') => InputEvent::AltS,
-            Key::Alt('r') => InputEvent::AltR,
-            Key::Alt('d') => InputEvent::AltD,
-            Key::Alt('o') => InputEvent::AltO,
-            Key::Alt('h') => InputEvent::AltH,
-            Key::Alt('x') => InputEvent::AltX,
-            Key::Ctrl('a') => InputEvent::CtrlA,
-            Key::Ctrl('c') => InputEvent::CtrlC,
-            Key::Ctrl('v') => InputEvent::CtrlV,
-            Key::Ctrl('x') => InputEvent::CtrlX,
-            Key::Ctrl('s') => InputEvent::CtrlS,
-            Key::Ctrl('o') => InputEvent::CtrlO,
-            Key::Ctrl('n') => InputEvent::CtrlN,
-            Key::Ctrl('f') => InputEvent::CtrlF,
-            Key::Ctrl('g') => InputEvent::CtrlG,
-            Key::Ctrl('z') => InputEvent::CtrlZ,
-            Key::Ctrl('y') => InputEvent::CtrlY,
-            Key::Ctrl('q') => InputEvent::CtrlQ,
+            Key::F(n) => InputEvent::F(n),
+            Key::Alt(c) => InputEvent::Alt(c),
+            Key::Ctrl(c) => InputEvent::Ctrl(c),
             Key::Mouse(MouseEvent { button: MouseButton::Left, row, col, pressed: true, motion: false, .. }) => {
                 InputEvent::MouseClick { row, col }
             }
@@ -197,11 +137,9 @@ impl From<Key> for InputEvent {
                 InputEvent::MouseDrag { row, col }
             }
             Key::Mouse(MouseEvent { button: MouseButton::WheelUp, row, col, shift: true, .. }) => {
-                // Shift+ScrollUp = scroll left (for terminals without native horizontal scroll)
                 InputEvent::ScrollLeft { row, col }
             }
             Key::Mouse(MouseEvent { button: MouseButton::WheelDown, row, col, shift: true, .. }) => {
-                // Shift+ScrollDown = scroll right (for terminals without native horizontal scroll)
                 InputEvent::ScrollRight { row, col }
             }
             Key::Mouse(MouseEvent { button: MouseButton::WheelUp, row, col, .. }) => {
@@ -219,9 +157,8 @@ impl From<Key> for InputEvent {
             Key::Mouse(MouseEvent { button: MouseButton::None, row, col, motion: true, .. }) => {
                 InputEvent::MouseMove { row, col }
             }
-            Key::Mouse(_) => InputEvent::Unknown, // Ignore other mouse events
+            Key::Mouse(_) => InputEvent::Unknown,
             Key::Unknown(bytes) => InputEvent::UnknownBytes(bytes),
-            _ => InputEvent::Unknown,
         }
     }
 }
@@ -230,29 +167,29 @@ impl From<Key> for InputEvent {
 pub fn is_menu_trigger(event: &InputEvent) -> bool {
     matches!(
         event,
-        InputEvent::F10
-            | InputEvent::AltF
-            | InputEvent::AltE
-            | InputEvent::AltV
-            | InputEvent::AltS
-            | InputEvent::AltR
-            | InputEvent::AltD
-            | InputEvent::AltO
-            | InputEvent::AltH
+        InputEvent::F(10)
+            | InputEvent::Alt('f')
+            | InputEvent::Alt('e')
+            | InputEvent::Alt('v')
+            | InputEvent::Alt('s')
+            | InputEvent::Alt('r')
+            | InputEvent::Alt('d')
+            | InputEvent::Alt('o')
+            | InputEvent::Alt('h')
     )
 }
 
 /// Get menu index from Alt key
 pub fn menu_index_from_alt(event: &InputEvent) -> Option<usize> {
     match event {
-        InputEvent::AltF => Some(0), // File
-        InputEvent::AltE => Some(1), // Edit
-        InputEvent::AltV => Some(2), // View
-        InputEvent::AltS => Some(3), // Search
-        InputEvent::AltR => Some(4), // Run
-        InputEvent::AltD => Some(5), // Debug
-        InputEvent::AltO => Some(6), // Options
-        InputEvent::AltH => Some(7), // Help
+        InputEvent::Alt('f') => Some(0), // File
+        InputEvent::Alt('e') => Some(1), // Edit
+        InputEvent::Alt('v') => Some(2), // View
+        InputEvent::Alt('s') => Some(3), // Search
+        InputEvent::Alt('r') => Some(4), // Run
+        InputEvent::Alt('d') => Some(5), // Debug
+        InputEvent::Alt('o') => Some(6), // Options
+        InputEvent::Alt('h') => Some(7), // Help
         _ => None,
     }
 }

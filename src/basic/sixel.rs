@@ -44,15 +44,32 @@ impl SixelEncoder {
     /// * `height` - Image height in pixels
     /// * `scale` - Scale factor (1 = 1:1, 2 = 2x size, etc.)
     pub fn encode(&mut self, pixels: &[u8], width: u32, height: u32, scale: u32) -> &str {
+        let scale = scale.max(1);
+        let target_width = width * scale;
+        let target_height = height * scale;
+        self.encode_to_size(pixels, width, height, target_width, target_height)
+    }
+
+    /// Encode a rectangular region of a pixel buffer to sixel format
+    ///
+    /// * `pixels` - Full source pixel buffer (color indices 0-15), row-major order
+    /// * `src_width` - Full source image width in pixels
+    /// * `src_height` - Full source image height in pixels
+    /// * `region_x` - Region x offset in pixels
+    /// * `region_y` - Region y offset in pixels (should be aligned to 6-pixel boundary)
+    /// * `region_w` - Region width in pixels
+    /// * `region_h` - Region height in pixels
+    pub fn encode_region(&mut self, pixels: &[u8], src_width: u32, _src_height: u32,
+                         region_x: u32, region_y: u32, region_w: u32, region_h: u32) -> &str {
         self.output.clear();
 
-        let scale = scale.max(1);
-        let scaled_width = width * scale;
-        let scaled_height = height * scale;
+        if region_w == 0 || region_h == 0 {
+            return &self.output;
+        }
 
         // Sixel introducer: DCS q
-        // P1=0 (pixel aspect ratio 2:1), P2=1 (no background), P3=0 (horizontal grid size)
-        self.output.push_str("\x1bP0;1;q");
+        // P1=0 (aspect ratio), P2=0 (opaque - erases background), P3=0 (grid size)
+        self.output.push_str("\x1bP0;0;q");
 
         // Define color palette (convert 0-255 to 0-100 for sixel)
         for (i, &(r, g, b)) in PALETTE_16.iter().enumerate() {
@@ -61,6 +78,88 @@ impl SixelEncoder {
             let b100 = (b as u32 * 100 / 255) as u8;
             self.output.push_str(&format!("#{};2;{};{};{}", i, r100, g100, b100));
         }
+
+        // Raster attributes: "Pan;Pad;Ph;Pv - declare image dimensions
+        self.output.push_str(&format!("\"1;1;{};{}", region_w, region_h));
+
+        // Encode sixel data for just this region
+        let mut y = 0u32;
+        while y < region_h {
+            let sixel_row_height = 6.min(region_h - y);
+
+            // Process each color separately
+            for color in 0..16u8 {
+                self.output.push_str(&format!("#{}", color));
+
+                let mut x = 0u32;
+                let mut run_char: Option<char> = None;
+                let mut run_length = 0u32;
+
+                while x < region_w {
+                    let mut sixel_bits = 0u8;
+
+                    for bit in 0..sixel_row_height {
+                        let src_y = region_y + y + bit;
+                        let src_x = region_x + x;
+                        let idx = (src_y * src_width + src_x) as usize;
+
+                        if idx < pixels.len() && pixels[idx] == color {
+                            sixel_bits |= 1 << bit;
+                        }
+                    }
+
+                    let sixel_char = (sixel_bits + 63) as char;
+
+                    if Some(sixel_char) == run_char {
+                        run_length += 1;
+                    } else {
+                        self.flush_run(run_char, run_length);
+                        run_char = Some(sixel_char);
+                        run_length = 1;
+                    }
+
+                    x += 1;
+                }
+
+                self.flush_run(run_char, run_length);
+                self.output.push('$');
+            }
+
+            self.output.push('-');
+            y += 6;
+        }
+
+        self.output.push_str("\x1b\\");
+        &self.output
+    }
+
+    /// Encode a pixel buffer to sixel format, scaled to fit target dimensions
+    ///
+    /// * `pixels` - Color indices (0-15) for each pixel, row-major order
+    /// * `width` - Source image width in pixels
+    /// * `height` - Source image height in pixels
+    /// * `target_width` - Target output width in pixels
+    /// * `target_height` - Target output height in pixels
+    pub fn encode_to_size(&mut self, pixels: &[u8], width: u32, height: u32, target_width: u32, target_height: u32) -> &str {
+        self.output.clear();
+
+        let scaled_width = target_width.max(1);
+        let scaled_height = target_height.max(1);
+
+        // Sixel introducer: DCS q
+        // P1=0 (aspect ratio), P2=0 (opaque - erases background), P3=0 (grid size)
+        self.output.push_str("\x1bP0;0;q");
+
+        // Define color palette (convert 0-255 to 0-100 for sixel)
+        for (i, &(r, g, b)) in PALETTE_16.iter().enumerate() {
+            let r100 = (r as u32 * 100 / 255) as u8;
+            let g100 = (g as u32 * 100 / 255) as u8;
+            let b100 = (b as u32 * 100 / 255) as u8;
+            self.output.push_str(&format!("#{};2;{};{};{}", i, r100, g100, b100));
+        }
+
+        // Raster attributes: "Pan;Pad;Ph;Pv - declare image dimensions
+        self.output.push_str(&format!("\"1;1;{};{}", scaled_width, scaled_height));
 
         // Encode sixel data
         // Sixel encodes 6 vertical pixels per character
@@ -87,8 +186,9 @@ impl SixelEncoder {
 
                     for bit in 0..sixel_row_height {
                         let py = y + bit;
-                        let src_y = py / scale;
-                        let src_x = x / scale;
+                        // Map output coordinates to source coordinates (works for both up/downscaling)
+                        let src_y = (py * height) / scaled_height;
+                        let src_x = (x * width) / scaled_width;
 
                         if src_y < height && src_x < width {
                             let idx = (src_y * width + src_x) as usize;

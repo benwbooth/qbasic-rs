@@ -1892,7 +1892,7 @@ impl Editor {
                 }
                 true
             }
-            InputEvent::CtrlA => {
+            InputEvent::Ctrl('a') => {
                 self.select_all();
                 true
             }
@@ -1903,7 +1903,7 @@ impl Editor {
                 };
                 true
             }
-            InputEvent::F9 => {
+            InputEvent::F(9) => {
                 state.toggle_breakpoint(self.cursor_line);
                 true
             }
@@ -1937,7 +1937,7 @@ impl Editor {
                     false  // Let main.rs handle other Escape uses
                 }
             }
-            InputEvent::CtrlD => {
+            InputEvent::Ctrl('d') => {
                 // Duplicate current line
                 self.duplicate_line();
                 true
@@ -1957,7 +1957,7 @@ impl Editor {
                 self.move_line_down();
                 true
             }
-            InputEvent::CtrlSlash => {
+            InputEvent::Ctrl('/') => {
                 // Toggle comment
                 self.toggle_comment();
                 true

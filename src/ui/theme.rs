@@ -234,10 +234,10 @@ impl Theme {
         theme.list_focused_selected_fg = Color::LightGray;
         theme.list_focused_selected_bg = Color::Black;
 
-        theme.scrollbar_track_fg = Color::LightGray;
-        theme.scrollbar_track_bg = Color::Blue;
+        theme.scrollbar_track_fg = Color::DarkGray;
+        theme.scrollbar_track_bg = Color::LightGray;
         theme.scrollbar_thumb_fg = Color::Black;
-        theme.scrollbar_thumb_bg = Color::Blue;
+        theme.scrollbar_thumb_bg = Color::LightGray;
 
         theme.checkbox_fg = Color::Black;
         theme.checkbox_bg = Color::LightGray;

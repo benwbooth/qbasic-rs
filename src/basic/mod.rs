@@ -3,7 +3,6 @@
 pub mod lexer;
 pub mod parser;
 pub mod interpreter;
-pub mod builtins;
 pub mod graphics;
 pub mod sixel;
 

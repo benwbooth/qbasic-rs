@@ -183,10 +183,10 @@ impl MenuBar {
             screen.set(row, x, ' ', fg, bg);
             x += 1;
 
-            // Title with hotkey highlighting (first match only)
+            // Title with hotkey highlighting (only when menu is NOT open)
             let mut hotkey_highlighted = false;
             for (j, ch) in menu.title.chars().enumerate() {
-                let ch_fg = if !hotkey_highlighted && ch.to_ascii_lowercase() == menu.hotkey.to_ascii_lowercase() {
+                let ch_fg = if !state.menu_open && !hotkey_highlighted && ch.to_ascii_lowercase() == menu.hotkey.to_ascii_lowercase() {
                     hotkey_highlighted = true;
                     Color::White
                 } else {
@@ -225,6 +225,9 @@ impl MenuBar {
         // Draw shadow
         screen.draw_shadow(y, x, width, height);
 
+        // Track which hotkey characters have been used (case-insensitive)
+        let mut used_hotkeys: std::collections::HashSet<char> = std::collections::HashSet::new();
+
         // Draw items
         for (i, item) in menu.items.iter().enumerate() {
             let row = y + 1 + i as u16;
@@ -246,10 +249,21 @@ impl MenuBar {
                     screen.set(row, x + c, ' ', fg, bg);
                 }
 
-                // Item label with first letter as hotkey (highlighted in white)
+                // Find the first unused character for hotkey highlighting
+                let mut hotkey_pos: Option<usize> = None;
+                for (j, ch) in item.label.chars().enumerate() {
+                    let lower = ch.to_ascii_lowercase();
+                    if lower.is_alphabetic() && !used_hotkeys.contains(&lower) {
+                        hotkey_pos = Some(j);
+                        used_hotkeys.insert(lower);
+                        break;
+                    }
+                }
+
+                // Item label with hotkey highlighting
                 let mut label_x = x + 2;
                 for (j, ch) in item.label.chars().enumerate() {
-                    let ch_fg = if j == 0 {
+                    let ch_fg = if hotkey_pos == Some(j) {
                         Color::White
                     } else {
                         fg
@@ -271,6 +285,30 @@ impl MenuBar {
         }
     }
 
+    /// Compute the hotkey character for each menu item (same logic as draw_dropdown)
+    /// Returns a vector of (item_index, hotkey_char) for non-separator items
+    fn compute_item_hotkeys(&self, menu_index: usize) -> Vec<(usize, char)> {
+        let menu = &self.menus[menu_index];
+        let mut used_hotkeys: std::collections::HashSet<char> = std::collections::HashSet::new();
+        let mut result = Vec::new();
+
+        for (i, item) in menu.items.iter().enumerate() {
+            if item.separator {
+                continue;
+            }
+            // Find the first unused alphabetic character
+            for ch in item.label.chars() {
+                let lower = ch.to_ascii_lowercase();
+                if lower.is_alphabetic() && !used_hotkeys.contains(&lower) {
+                    used_hotkeys.insert(lower);
+                    result.push((i, lower));
+                    break;
+                }
+            }
+        }
+        result
+    }
+
     /// Handle menu navigation, returns true if handled
     pub fn handle_input(&self, state: &mut AppState, event: &crate::input::InputEvent) -> Option<MenuAction> {
         use crate::input::InputEvent;
@@ -289,6 +327,21 @@ impl MenuBar {
                 } else {
                     None
                 }
+            }
+            InputEvent::Char(c) | InputEvent::Alt(c) => {
+                // When menu is open, pressing a letter key (or Alt+letter) activates the matching item
+                let hotkeys = self.compute_item_hotkeys(state.menu_index);
+                let lower = c.to_ascii_lowercase();
+                for (item_idx, hotkey) in hotkeys {
+                    if hotkey == lower {
+                        let menu = &self.menus[state.menu_index];
+                        if menu.items[item_idx].enabled {
+                            state.close_menu();
+                            return Some(MenuAction::Execute(state.menu_index, item_idx));
+                        }
+                    }
+                }
+                Some(MenuAction::Navigate) // Consume the key even if no match
             }
             InputEvent::CursorUp => {
                 let menu = &self.menus[state.menu_index];

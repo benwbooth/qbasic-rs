@@ -71,6 +71,21 @@ impl ClipRect {
     }
 }
 
+/// A single sixel update region
+#[derive(Clone)]
+pub struct SixelUpdate {
+    /// The sixel data
+    pub data: String,
+    /// X position in pixels
+    pub x: u32,
+    /// Y position in pixels
+    pub y: u32,
+    /// Width in pixels
+    pub width: u32,
+    /// Height in pixels
+    pub height: u32,
+}
+
 /// Double-buffered screen
 pub struct Screen {
     width: u16,
@@ -83,6 +98,32 @@ pub struct Screen {
     cursor_style: CursorStyle,
     /// Pending sixel graphics data (if any)
     sixel_data: Option<String>,
+    /// Pending sixel updates (for differential rendering)
+    sixel_updates: Vec<SixelUpdate>,
+    /// Last sixel generation rendered
+    last_sixel_generation: u64,
+    /// Current sixel generation
+    sixel_generation: u64,
+    /// Sixel position row offset (0-based)
+    sixel_row: u16,
+    /// Sixel position column offset (0-based)
+    sixel_col: u16,
+    /// Sixel rendered size in character cells (for border filling)
+    sixel_cols: u16,
+    sixel_rows: u16,
+    /// Previous sixel position/size for change detection
+    prev_sixel_row: u16,
+    prev_sixel_col: u16,
+    prev_sixel_rows: u16,
+    prev_sixel_cols: u16,
+    /// Whether screen needs clearing before next sixel output
+    sixel_needs_clear: bool,
+    /// Whether we're currently in sixel graphics mode
+    in_sixel_mode: bool,
+    /// Character cell width in pixels (for positioning partial sixels)
+    char_width: u32,
+    /// Character cell height in pixels
+    char_height: u32,
     clip_stack: Vec<ClipRect>,
 }
 
@@ -102,6 +143,21 @@ impl Screen {
             cursor_visible: true,
             cursor_style: CursorStyle::BlinkingUnderline, // Default to blinking underline
             sixel_data: None,
+            sixel_updates: Vec::new(),
+            last_sixel_generation: u64::MAX, // Force first render
+            sixel_generation: 0,
+            sixel_row: 0,
+            sixel_col: 0,
+            sixel_cols: 0,
+            sixel_rows: 0,
+            prev_sixel_row: u16::MAX, // Force border fill on first frame
+            prev_sixel_col: u16::MAX,
+            prev_sixel_rows: 0,
+            prev_sixel_cols: 0,
+            sixel_needs_clear: true, // Clear on first sixel output
+            in_sixel_mode: false,
+            char_width: 8,
+            char_height: 16,
             clip_stack: Vec::new(),
         }
     }
@@ -121,6 +177,24 @@ impl Screen {
         self.front = vec![Cell::new('\0', Color::Black, Color::Black); size];
         self.back = vec![default_cell; size];
         self.clip_stack.clear();
+        self.sixel_updates.clear();
+        self.last_sixel_generation = u64::MAX; // Force sixel re-render on resize
+        self.sixel_needs_clear = true; // Clear screen on next sixel output
+    }
+
+    /// Set the character cell size in pixels (for sixel positioning)
+    pub fn set_char_size(&mut self, width: u32, height: u32) {
+        if width > 0 {
+            self.char_width = width;
+        }
+        if height > 0 {
+            self.char_height = height;
+        }
+    }
+
+    /// Get the character cell size in pixels
+    pub fn char_size(&self) -> (u32, u32) {
+        (self.char_width, self.char_height)
     }
 
     /// Convert row/col to buffer index (1-based coordinates)
@@ -357,13 +431,43 @@ impl Screen {
     /// Set sixel graphics data for next flush
     ///
     /// When set, flush() will render sixel graphics instead of the cell buffer.
-    pub fn set_sixel(&mut self, sixel_data: String) {
+    /// The generation is used to detect if the sixel has changed since last render.
+    pub fn set_sixel(&mut self, sixel_data: String, generation: u64) {
         self.sixel_data = Some(sixel_data);
+        self.sixel_generation = generation;
     }
 
-    /// Clear sixel graphics data
+    /// Clear sixel graphics data and exit sixel mode
     pub fn clear_sixel(&mut self) {
         self.sixel_data = None;
+        self.sixel_updates.clear();
+        self.in_sixel_mode = false;
+        // Reset sixel generation to force fresh render next time
+        self.sixel_generation = 0;
+        self.last_sixel_generation = 0;
+        // Request clear on next sixel output (in case we re-enter graphics mode)
+        self.sixel_needs_clear = true;
+    }
+
+    /// Add a sixel update for differential rendering
+    /// x, y are in pixels; width, height are in pixels
+    pub fn add_sixel_update(&mut self, data: String, x: u32, y: u32, width: u32, height: u32, generation: u64) {
+        self.sixel_updates.push(SixelUpdate { data, x, y, width, height });
+        self.sixel_generation = generation;
+        self.in_sixel_mode = true;
+    }
+
+    /// Check if we're currently in sixel graphics mode
+    pub fn is_sixel_mode(&self) -> bool {
+        self.in_sixel_mode
+    }
+
+    /// Set sixel position offset and size (in character cells, 0-based position)
+    pub fn set_sixel_position(&mut self, row: u16, col: u16, rows: u16, cols: u16) {
+        self.sixel_row = row;
+        self.sixel_col = col;
+        self.sixel_rows = rows;
+        self.sixel_cols = cols;
     }
 
     /// Apply mouse cursor effect at given position (orange background, inverted foreground)
@@ -403,9 +507,28 @@ impl Screen {
 
     /// Flush changes to the terminal (only updates changed cells)
     pub fn flush(&mut self, term: &mut Terminal) -> io::Result<()> {
-        // Check for sixel graphics mode
+        // Check for sixel graphics mode - prefer sixel_updates (differential) over sixel_data (full)
+        if !self.sixel_updates.is_empty() {
+            let updates = std::mem::take(&mut self.sixel_updates);
+            self.last_sixel_generation = self.sixel_generation;
+            return self.flush_sixel_updates(term, &updates);
+        }
+
+        // If we're in sixel mode but have no updates, just do text overlay without touching sixel
+        if self.in_sixel_mode {
+            return self.flush_text_overlay_only(term);
+        }
+
+        // Legacy full sixel mode
         if let Some(sixel_data) = self.sixel_data.take() {
-            return self.flush_sixel(term, &sixel_data);
+            // Only output sixel if it changed or screen needs refresh
+            let sixel_changed = self.sixel_generation != self.last_sixel_generation
+                || self.sixel_needs_clear
+                || self.sixel_row != self.prev_sixel_row
+                || self.sixel_col != self.prev_sixel_col;
+
+            self.last_sixel_generation = self.sixel_generation;
+            return self.flush_sixel(term, &sixel_data, sixel_changed);
         }
 
         let mut last_fg = Color::Black;
@@ -466,41 +589,126 @@ impl Screen {
         for cell in &mut self.front {
             cell.ch = '\0';
         }
+        // Note: Don't reset sixel generation here - resize() handles that case
+    }
+
+    /// Request screen clear before next sixel output
+    /// Call this when entering graphics mode or when graphics mode changes
+    pub fn request_sixel_clear(&mut self) {
+        self.sixel_needs_clear = true;
     }
 
     /// Flush sixel graphics with optional text overlay
     ///
     /// Outputs sixel graphics first, then overlays any non-empty text cells.
     /// This allows mixing graphics and text (for INPUT prompts, scores, etc.)
-    pub fn flush_sixel(&mut self, term: &mut Terminal, sixel_data: &str) -> io::Result<()> {
-        // Position at top-left and output sixel graphics
-        term.goto(1, 1)?;
-        term.write_raw(sixel_data)?;
+    ///
+    /// If `output_sixel` is false, skips the sixel output (used when graphics haven't changed)
+    pub fn flush_sixel(&mut self, term: &mut Terminal, sixel_data: &str, output_sixel: bool) -> io::Result<()> {
+        // Check if sixel position/size changed - if so, we need to redraw borders
+        let position_changed = self.sixel_row != self.prev_sixel_row
+            || self.sixel_col != self.prev_sixel_col
+            || self.sixel_rows != self.prev_sixel_rows
+            || self.sixel_cols != self.prev_sixel_cols;
 
-        // Now overlay text cells that have content
-        // This allows PRINT/LOCATE/INPUT to work in graphics mode
+        // On first frame or when sixel position changes, fill borders with black
+        if self.sixel_needs_clear || position_changed {
+            term.set_colors(Color::LightGray, Color::Black)?;
+
+            if self.sixel_needs_clear {
+                term.clear()?;
+                self.sixel_needs_clear = false;
+            }
+
+            // Fill border areas with black (areas not covered by sixel)
+            let sixel_end_row = self.sixel_row.saturating_add(self.sixel_rows);
+            let sixel_end_col = self.sixel_col.saturating_add(self.sixel_cols);
+
+            // Top border (rows before sixel)
+            for r in 1..=self.sixel_row {
+                term.goto(r, 1)?;
+                for _ in 1..=self.width {
+                    term.write_char(' ')?;
+                }
+            }
+
+            // Bottom border (rows after sixel)
+            for r in (sixel_end_row + 1)..=self.height {
+                term.goto(r, 1)?;
+                for _ in 1..=self.width {
+                    term.write_char(' ')?;
+                }
+            }
+
+            // Left and right borders (sides of sixel area)
+            for r in (self.sixel_row + 1)..=sixel_end_row.min(self.height) {
+                // Left border
+                if self.sixel_col > 0 {
+                    term.goto(r, 1)?;
+                    for _ in 1..=self.sixel_col {
+                        term.write_char(' ')?;
+                    }
+                }
+                // Right border
+                if sixel_end_col < self.width {
+                    term.goto(r, sixel_end_col + 1)?;
+                    for _ in (sixel_end_col + 1)..=self.width {
+                        term.write_char(' ')?;
+                    }
+                }
+            }
+
+            // Remember current position/size
+            self.prev_sixel_row = self.sixel_row;
+            self.prev_sixel_col = self.sixel_col;
+            self.prev_sixel_rows = self.sixel_rows;
+            self.prev_sixel_cols = self.sixel_cols;
+        }
+
+        // Position at offset and output sixel graphics (convert 0-based to 1-based)
+        // Only output if graphics changed to reduce text overlay flicker
+        if output_sixel {
+            let row = self.sixel_row.saturating_add(1);
+            let col = self.sixel_col.saturating_add(1);
+            term.goto(row, col)?;
+            term.write_raw(sixel_data)?;
+        }
+
+        // Text overlay - draw text on top of sixel
+        // IMPORTANT: Don't output spaces over the sixel! Only output actual text characters.
+        // Spaces would overwrite the sixel graphics with blank cells.
         let mut last_fg = Color::Black;
         let mut last_bg = Color::Black;
 
-        for row in 1..=self.height {
-            for col in 1..=self.width {
-                if let Some(idx) = self.index(row, col) {
-                    let cell = self.back[idx];
-                    // Only draw non-space characters (text overlay)
-                    if cell.ch != ' ' && cell.ch != '\0' {
-                        term.goto(row, col)?;
-                        if cell.fg != last_fg || cell.bg != last_bg {
-                            term.set_colors(cell.fg, cell.bg)?;
-                            last_fg = cell.fg;
-                            last_bg = cell.bg;
+        for r in 1..=self.height {
+            for c in 1..=self.width {
+                if let Some(idx) = self.index(r, c) {
+                    let front = self.front[idx];
+                    let back = self.back[idx];
+
+                    let back_is_text = back.ch != ' ' && back.ch != '\0';
+                    let front_is_text = front.ch != ' ' && front.ch != '\0';
+
+                    // Only output if:
+                    // - There's actual text to draw (not spaces)
+                    // - OR we need to clear old text that was there (front had text, back doesn't)
+                    let should_output = back_is_text || (front_is_text && !back_is_text);
+
+                    if should_output {
+                        term.goto(r, c)?;
+                        if back.fg != last_fg || back.bg != last_bg {
+                            term.set_colors(back.fg, back.bg)?;
+                            last_fg = back.fg;
+                            last_bg = back.bg;
                         }
-                        term.write_char(cell.ch)?;
+                        term.write_char(back.ch)?;
+                        self.front[idx] = back;
                     }
                 }
             }
         }
 
-        // Position cursor if visible
+        // Handle cursor visibility
         if self.cursor_visible {
             term.goto(self.cursor_row, self.cursor_col)?;
             term.set_cursor_style(self.cursor_style)?;
@@ -510,10 +718,115 @@ impl Screen {
         }
 
         term.flush()?;
+        Ok(())
+    }
 
-        // Invalidate front buffer since we bypassed normal diff rendering
-        self.invalidate();
+    /// Flush differential sixel updates
+    /// Each update is positioned at its pixel coordinates
+    pub fn flush_sixel_updates(&mut self, term: &mut Terminal, updates: &[SixelUpdate]) -> io::Result<()> {
+        // Handle screen clearing if needed
+        if self.sixel_needs_clear {
+            term.set_colors(Color::LightGray, Color::Black)?;
+            term.clear()?;
+            self.sixel_needs_clear = false;
+        }
 
+        // Output each sixel update at its position
+        for update in updates {
+            // Convert pixel position to character cell (1-based)
+            // Note: sixel renders at cursor position in pixel space, so we position
+            // the cursor at the character cell that contains the top-left pixel
+            let row = (update.y / self.char_height) as u16 + 1;
+            let col = (update.x / self.char_width) as u16 + 1;
+
+            term.goto(row, col)?;
+            term.write_raw(&update.data)?;
+        }
+
+        // Text overlay - draw text on top of sixel
+        let mut last_fg = Color::Black;
+        let mut last_bg = Color::Black;
+
+        for r in 1..=self.height {
+            for c in 1..=self.width {
+                if let Some(idx) = self.index(r, c) {
+                    let front = self.front[idx];
+                    let back = self.back[idx];
+
+                    let back_is_text = back.ch != ' ' && back.ch != '\0';
+                    let front_is_text = front.ch != ' ' && front.ch != '\0';
+
+                    let should_output = back_is_text || (front_is_text && !back_is_text);
+
+                    if should_output {
+                        term.goto(r, c)?;
+                        if back.fg != last_fg || back.bg != last_bg {
+                            term.set_colors(back.fg, back.bg)?;
+                            last_fg = back.fg;
+                            last_bg = back.bg;
+                        }
+                        term.write_char(back.ch)?;
+                        self.front[idx] = back;
+                    }
+                }
+            }
+        }
+
+        // Handle cursor visibility
+        if self.cursor_visible {
+            term.goto(self.cursor_row, self.cursor_col)?;
+            term.set_cursor_style(self.cursor_style)?;
+            term.show_cursor()?;
+        } else {
+            term.hide_cursor()?;
+        }
+
+        term.flush()?;
+        Ok(())
+    }
+
+    /// Flush only text overlay changes without touching sixel graphics
+    /// Used when in sixel mode but no graphics updates needed
+    fn flush_text_overlay_only(&mut self, term: &mut Terminal) -> io::Result<()> {
+        let mut last_fg = Color::Black;
+        let mut last_bg = Color::Black;
+
+        for r in 1..=self.height {
+            for c in 1..=self.width {
+                if let Some(idx) = self.index(r, c) {
+                    let front = self.front[idx];
+                    let back = self.back[idx];
+
+                    let back_is_text = back.ch != ' ' && back.ch != '\0';
+                    let front_is_text = front.ch != ' ' && front.ch != '\0';
+
+                    // Only output if there's actual text to draw or text to clear
+                    let should_output = back_is_text || (front_is_text && !back_is_text);
+
+                    if should_output {
+                        term.goto(r, c)?;
+                        if back.fg != last_fg || back.bg != last_bg {
+                            term.set_colors(back.fg, back.bg)?;
+                            last_fg = back.fg;
+                            last_bg = back.bg;
+                        }
+                        term.write_char(back.ch)?;
+                        self.front[idx] = back;
+                    }
+                }
+            }
+        }
+
+        // Handle cursor visibility
+        if self.cursor_visible {
+            term.goto(self.cursor_row, self.cursor_col)?;
+            term.set_cursor_style(self.cursor_style)?;
+            term.show_cursor()?;
+        } else {
+            term.hide_cursor()?;
+        }
+
+        term.flush()?;
         Ok(())
     }
 }
