@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 120" width="200" height="240">
+  <!-- Gorilla in brown (color 6 in QBasic is more of an orange-brown) -->
+
+  <!-- HEAD - rounder, more natural -->
+  <!-- Main head (rounded rectangle / ellipse) -->
+  <ellipse cx="50" cy="22" rx="22" ry="18" fill="#CC7722"/>
+
+  <!-- Brow ridge -->
+  <ellipse cx="50" cy="26" rx="26" ry="8" fill="#CC7722"/>
+
+  <!-- Face/muzzle area (lighter or same color, protruding) -->
+  <ellipse cx="50" cy="32" rx="14" ry="10" fill="#CC7722"/>
+
+  <!-- EYES (black) - rounder -->
+  <ellipse cx="40" cy="24" rx="4" ry="3" fill="black"/>
+  <ellipse cx="60" cy="24" rx="4" ry="3" fill="black"/>
+
+  <!-- Nostrils -->
+  <circle cx="46" cy="34" r="2" fill="black"/>
+  <circle cx="54" cy="34" r="2" fill="black"/>
+
+  <!-- NECK -->
+  <rect x="38" y="38" width="24" height="8" fill="#CC7722"/>
+
+  <!-- TORSO (wide shoulders) -->
+  <ellipse cx="50" cy="58" rx="34" ry="16" fill="#CC7722"/>
+
+  <!-- BELLY/HIPS -->
+  <ellipse cx="50" cy="80" rx="24" ry="14" fill="#CC7722"/>
+
+  <!-- LEFT ARM - curved, hanging down -->
+  <path d="M 20 52
+           Q 2 70, 10 92"
+        stroke="#CC7722" stroke-width="12" fill="none" stroke-linecap="round"/>
+
+  <!-- RIGHT ARM - curved, hanging down -->
+  <path d="M 80 52
+           Q 98 70, 90 92"
+        stroke="#CC7722" stroke-width="12" fill="none" stroke-linecap="round"/>
+
+  <!-- LEFT LEG - curved outward -->
+  <path d="M 34 90
+           Q 22 105, 26 118"
+        stroke="#CC7722" stroke-width="12" fill="none" stroke-linecap="round"/>
+
+  <!-- RIGHT LEG - curved outward -->
+  <path d="M 66 90
+           Q 78 105, 74 118"
+        stroke="#CC7722" stroke-width="12" fill="none" stroke-linecap="round"/>
+</svg>

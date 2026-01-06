@@ -160,7 +160,7 @@ pub enum Stmt {
         box_fill: Option<bool>, // None=line, Some(false)=box, Some(true)=filled box
     },
 
-    /// CIRCLE (x, y), radius [, color] [, start] [, end]
+    /// CIRCLE (x, y), radius [, color] [, start] [, end] [, aspect]
     Circle {
         x: Expr,
         y: Expr,
@@ -168,6 +168,20 @@ pub enum Stmt {
         color: Option<Expr>,
         start_angle: Option<Expr>,
         end_angle: Option<Expr>,
+        aspect: Option<Expr>,
+    },
+
+    /// BEZIER (x1, y1)-(cx, cy)-(x2, y2) [, color] [, thickness]
+    /// Quadratic bezier curve from (x1,y1) to (x2,y2) with control point (cx,cy)
+    Bezier {
+        x1: Expr,
+        y1: Expr,
+        cx: Expr,
+        cy: Expr,
+        x2: Expr,
+        y2: Expr,
+        color: Option<Expr>,
+        thickness: Option<Expr>,
     },
 
     /// PAINT (x, y), color
@@ -447,6 +461,10 @@ impl Parser {
             TokenKind::Keyword(Keyword::Circle) => {
                 self.advance();
                 self.parse_circle()
+            }
+            TokenKind::Keyword(Keyword::Bezier) => {
+                self.advance();
+                self.parse_bezier()
             }
             TokenKind::Keyword(Keyword::Paint) => {
                 self.advance();
@@ -1107,7 +1125,61 @@ impl Parser {
             None
         };
 
-        Ok(Stmt::Circle { x, y, radius, color, start_angle, end_angle })
+        // Parse optional aspect ratio
+        let aspect = if matches!(self.peek(), TokenKind::Comma) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        Ok(Stmt::Circle { x, y, radius, color, start_angle, end_angle, aspect })
+    }
+
+    /// Parse BEZIER (x1, y1)-(cx, cy)-(x2, y2) [, color] [, thickness]
+    fn parse_bezier(&mut self) -> Result<Stmt, String> {
+        // First point
+        self.expect(TokenKind::LeftParen)?;
+        let x1 = self.parse_expression()?;
+        self.expect(TokenKind::Comma)?;
+        let y1 = self.parse_expression()?;
+        self.expect(TokenKind::RightParen)?;
+
+        self.expect(TokenKind::Minus)?;
+
+        // Control point
+        self.expect(TokenKind::LeftParen)?;
+        let cx = self.parse_expression()?;
+        self.expect(TokenKind::Comma)?;
+        let cy = self.parse_expression()?;
+        self.expect(TokenKind::RightParen)?;
+
+        self.expect(TokenKind::Minus)?;
+
+        // End point
+        self.expect(TokenKind::LeftParen)?;
+        let x2 = self.parse_expression()?;
+        self.expect(TokenKind::Comma)?;
+        let y2 = self.parse_expression()?;
+        self.expect(TokenKind::RightParen)?;
+
+        // Optional color
+        let color = if matches!(self.peek(), TokenKind::Comma) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        // Optional thickness
+        let thickness = if matches!(self.peek(), TokenKind::Comma) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        Ok(Stmt::Bezier { x1, y1, cx, cy, x2, y2, color, thickness })
     }
 
     fn parse_paint(&mut self) -> Result<Stmt, String> {
@@ -1491,6 +1563,9 @@ impl Parser {
                     } else {
                         Ok(Expr::ArrayAccess(name, args))
                     }
+                } else if is_parameterless_function(&name) {
+                    // Handle functions that can be called without parentheses (RND, TIMER, etc.)
+                    Ok(Expr::FunctionCall(name, vec![]))
                 } else {
                     Ok(Expr::Variable(name))
                 }
@@ -1515,5 +1590,13 @@ fn is_builtin_function(name: &str) -> bool {
         "CINT" | "CLNG" | "CSNG" | "CDBL" |
         "TIMER" | "DATE$" | "TIME$" | "INKEY$" |
         "PEEK" | "FRE" | "POS" | "CSRLIN" | "POINT"
+    )
+}
+
+/// Functions that can be called without parentheses (zero-argument functions)
+fn is_parameterless_function(name: &str) -> bool {
+    let name_upper = name.to_uppercase();
+    matches!(name_upper.as_str(),
+        "RND" | "TIMER" | "DATE$" | "TIME$" | "INKEY$" | "POS" | "CSRLIN"
     )
 }

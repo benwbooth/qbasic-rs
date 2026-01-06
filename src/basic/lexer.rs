@@ -76,7 +76,7 @@ pub enum Keyword {
     Screen, Cls, Color, Locate,
     Pset, Preset, Circle, Paint,
     Draw, View, Window,
-    Palette,
+    Palette, Bezier,
 
     // Logical operators
     And, Or, Not, Xor, Eqv, Imp, Mod,
@@ -360,6 +360,7 @@ impl<'a> Lexer<'a> {
             "VIEW" => Some(Keyword::View),
             "WINDOW" => Some(Keyword::Window),
             "PALETTE" => Some(Keyword::Palette),
+            "BEZIER" => Some(Keyword::Bezier),
 
             // Logical operators
             "AND" => Some(Keyword::And),

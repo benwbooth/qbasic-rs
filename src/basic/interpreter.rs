@@ -1377,7 +1377,7 @@ async fn execute_stmt(
             StmtResult::Continue
         }
 
-        Stmt::Circle { x, y, radius, color, start_angle, end_angle } => {
+        Stmt::Circle { x, y, radius, color, start_angle, end_angle, aspect } => {
             let x_val = match eval_expr_core(state, x) {
                 Ok(v) => v.to_int() as i32,
                 Err(e) => return StmtResult::Error(e),
@@ -1418,7 +1418,64 @@ async fn execute_stmt(
                 None
             };
 
-            state.borrow_mut().graphics.circle_arc(x_val, y_val, radius_val, color_val, start_val, end_val);
+            let aspect_val = if let Some(a) = aspect {
+                match eval_expr_core(state, a) {
+                    Ok(v) => Some(v.to_float()),
+                    Err(e) => return StmtResult::Error(e),
+                }
+            } else {
+                None
+            };
+
+            state.borrow_mut().graphics.circle_arc(x_val, y_val, radius_val, color_val, start_val, end_val, aspect_val);
+            StmtResult::Continue
+        }
+
+        Stmt::Bezier { x1, y1, cx, cy, x2, y2, color, thickness } => {
+            let x1_val = match eval_expr_core(state, x1) {
+                Ok(v) => v.to_int() as i32,
+                Err(e) => return StmtResult::Error(e),
+            };
+            let y1_val = match eval_expr_core(state, y1) {
+                Ok(v) => v.to_int() as i32,
+                Err(e) => return StmtResult::Error(e),
+            };
+            let cx_val = match eval_expr_core(state, cx) {
+                Ok(v) => v.to_int() as i32,
+                Err(e) => return StmtResult::Error(e),
+            };
+            let cy_val = match eval_expr_core(state, cy) {
+                Ok(v) => v.to_int() as i32,
+                Err(e) => return StmtResult::Error(e),
+            };
+            let x2_val = match eval_expr_core(state, x2) {
+                Ok(v) => v.to_int() as i32,
+                Err(e) => return StmtResult::Error(e),
+            };
+            let y2_val = match eval_expr_core(state, y2) {
+                Ok(v) => v.to_int() as i32,
+                Err(e) => return StmtResult::Error(e),
+            };
+
+            let color_val = if let Some(c) = color {
+                match eval_expr_core(state, c) {
+                    Ok(v) => v.to_int() as u8,
+                    Err(e) => return StmtResult::Error(e),
+                }
+            } else {
+                state.borrow().graphics.foreground
+            };
+
+            let thickness_val = if let Some(t) = thickness {
+                match eval_expr_core(state, t) {
+                    Ok(v) => v.to_int() as i32,
+                    Err(e) => return StmtResult::Error(e),
+                }
+            } else {
+                1
+            };
+
+            state.borrow_mut().graphics.bezier(x1_val, y1_val, cx_val, cy_val, x2_val, y2_val, color_val, thickness_val);
             StmtResult::Continue
         }
 
@@ -2275,5 +2332,20 @@ RETURN
             assert_eq!(cell.fg, 12, "Food foreground color should be 12 (bright red)");
             assert_eq!(cell.bg, 1, "Food background color should be 1 (blue)");
         });
+    }
+
+    #[test]
+    fn test_rnd_variation() {
+        // Test that RND produces varied values (RND can be called without parentheses)
+        let code = r#"
+FOR i = 1 TO 10
+    PRINT RND
+NEXT i
+"#;
+        let output = run_basic(code).expect("Should run");
+        // Check that values are varied (not all the same)
+        let lines: Vec<&str> = output.trim().lines().collect();
+        let unique: std::collections::HashSet<&str> = lines.iter().cloned().collect();
+        assert!(unique.len() > 1, "Expected varied RND values, got: {}", output);
     }
 }

@@ -399,41 +399,89 @@ impl GraphicsMode {
         }
     }
 
-    /// Draw a circle arc (or full circle if no angles specified)
+    /// Draw a circle/ellipse arc (or full circle/ellipse if no angles specified)
     /// In QBasic, angles are in radians: 0 is at 3 o'clock, going counter-clockwise
-    pub fn circle_arc(&mut self, cx: i32, cy: i32, r: i32, color: u8, start: Option<f64>, end: Option<f64>) {
-        match (start, end) {
-            (Some(start_angle), Some(end_angle)) => {
-                // Mark the full bounding box as dirty
-                self.mark_bounding_box_dirty(cx - r, cy - r, cx + r, cy + r);
+    /// aspect: height/width ratio (1.0 = circle, <1 = wide ellipse, >1 = tall ellipse)
+    pub fn circle_arc(&mut self, cx: i32, cy: i32, r: i32, color: u8, start: Option<f64>, end: Option<f64>, aspect: Option<f64>) {
+        let aspect_ratio = aspect.unwrap_or(1.0);
+        let rx = r as f64;
+        let ry = r as f64 * aspect_ratio;
 
-                // Draw arc using parametric approach
-                // Step around the arc and draw each point
-                let step = 1.0 / (r as f64).max(1.0);
-                let mut angle = start_angle;
+        // Mark the full bounding box as dirty
+        self.mark_bounding_box_dirty(
+            cx - r,
+            cy - (ry as i32),
+            cx + r,
+            cy + (ry as i32)
+        );
 
-                // Handle wrap-around (e.g., start=7pi/4, end=pi/4)
-                let end_adjusted = if end_angle < start_angle {
-                    end_angle + std::f64::consts::PI * 2.0
-                } else {
-                    end_angle
-                };
+        let start_angle = start.unwrap_or(0.0);
+        let end_angle = end.unwrap_or(std::f64::consts::PI * 2.0);
 
-                while angle <= end_adjusted {
-                    let px = cx + (r as f64 * angle.cos()).round() as i32;
-                    let py = cy - (r as f64 * angle.sin()).round() as i32; // Y is inverted in screen coords
-                    self.pset(px, py, color);
-                    angle += step;
-                }
+        // Draw using parametric approach
+        // Step size based on circumference approximation
+        let circumference = std::f64::consts::PI * (rx + ry);
+        let step = 1.0 / circumference.max(1.0);
+        let mut angle = start_angle;
 
-                // Make sure we hit the end point
-                let px = cx + (r as f64 * end_angle.cos()).round() as i32;
-                let py = cy - (r as f64 * end_angle.sin()).round() as i32;
+        // Handle wrap-around (e.g., start=7pi/4, end=pi/4)
+        let end_adjusted = if end_angle < start_angle {
+            end_angle + std::f64::consts::PI * 2.0
+        } else {
+            end_angle
+        };
+
+        while angle <= end_adjusted {
+            let px = cx + (rx * angle.cos()).round() as i32;
+            let py = cy - (ry * angle.sin()).round() as i32; // Y is inverted in screen coords
+            self.pset(px, py, color);
+            angle += step;
+        }
+
+        // Make sure we hit the end point
+        let px = cx + (rx * end_angle.cos()).round() as i32;
+        let py = cy - (ry * end_angle.sin()).round() as i32;
+        self.pset(px, py, color);
+    }
+
+    /// Draw a quadratic bezier curve from (x1,y1) to (x2,y2) with control point (cx,cy)
+    /// thickness: line thickness in pixels
+    pub fn bezier(&mut self, x1: i32, y1: i32, cx: i32, cy: i32, x2: i32, y2: i32, color: u8, thickness: i32) {
+        // Mark bounding box as dirty
+        let min_x = x1.min(cx).min(x2);
+        let max_x = x1.max(cx).max(x2);
+        let min_y = y1.min(cy).min(y2);
+        let max_y = y1.max(cy).max(y2);
+        self.mark_bounding_box_dirty(min_x - thickness, min_y - thickness, max_x + thickness, max_y + thickness);
+
+        // Calculate approximate curve length for step size
+        let d1 = (((cx - x1) as f64).powi(2) + ((cy - y1) as f64).powi(2)).sqrt();
+        let d2 = (((x2 - cx) as f64).powi(2) + ((y2 - cy) as f64).powi(2)).sqrt();
+        let approx_length = d1 + d2;
+        let steps = (approx_length * 2.0).max(20.0) as i32;
+
+        // Draw the bezier curve
+        let half_thick = thickness / 2;
+        for i in 0..=steps {
+            let t = i as f64 / steps as f64;
+            let t1 = 1.0 - t;
+
+            // Quadratic bezier: B(t) = (1-t)^2 * P0 + 2(1-t)t * P1 + t^2 * P2
+            let px = (t1 * t1 * x1 as f64 + 2.0 * t1 * t * cx as f64 + t * t * x2 as f64).round() as i32;
+            let py = (t1 * t1 * y1 as f64 + 2.0 * t1 * t * cy as f64 + t * t * y2 as f64).round() as i32;
+
+            // Draw with thickness
+            if thickness <= 1 {
                 self.pset(px, py, color);
-            }
-            _ => {
-                // No arc angles, draw full circle
-                self.circle(cx, cy, r, color);
+            } else {
+                // Draw a filled circle at each point for thickness
+                for dy in -half_thick..=half_thick {
+                    for dx in -half_thick..=half_thick {
+                        if dx * dx + dy * dy <= half_thick * half_thick {
+                            self.pset(px + dx, py + dy, color);
+                        }
+                    }
+                }
             }
         }
     }
