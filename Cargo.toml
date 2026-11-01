@@ -1,12 +1,17 @@
 [package]
 name = "qbasic-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A faithful simulation of the MS-DOS QBasic IDE"
 
 [dependencies]
-libc = "0.2"
 arboard = "3"
 clap = { version = "4", features = ["derive"] }
 genawaiter = "0.99"
 async-recursion = "1.0"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console"] }

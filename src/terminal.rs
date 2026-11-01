@@ -2,8 +2,7 @@
 #![allow(dead_code)]
 //! No external TUI libraries - just raw escape codes
 
-use std::io::{self, Read, Write};
-use std::os::unix::io::AsRawFd;
+use std::io::{self, Write};
 
 /// DOS color palette (16 colors)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -176,9 +175,6 @@ pub enum Key {
     Unknown(Vec<u8>),
 }
 
-/// Original terminal settings for restoration
-static mut ORIG_TERMIOS: Option<libc::termios> = None;
-
 /// Terminal state manager
 pub struct Terminal {
     stdout: io::Stdout,
@@ -224,16 +220,13 @@ impl Terminal {
         (self.width, self.height)
     }
 
-    /// Update terminal size from ioctl
+    /// Update terminal size from the OS
     pub fn update_size(&mut self) {
-        unsafe {
-            let mut ws: libc::winsize = std::mem::zeroed();
-            if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 {
-                self.width = ws.ws_col;
-                self.height = ws.ws_row;
-                self.pixel_width = ws.ws_xpixel;
-                self.pixel_height = ws.ws_ypixel;
-            }
+        if let Some((width, height, pixel_width, pixel_height)) = sys::size() {
+            self.width = width;
+            self.height = height;
+            self.pixel_width = pixel_width;
+            self.pixel_height = pixel_height;
         }
     }
 
@@ -245,46 +238,12 @@ impl Terminal {
 
     /// Enable raw mode (disable canonical mode, echo, etc.)
     fn enable_raw_mode(&self) -> io::Result<()> {
-        unsafe {
-            let fd = io::stdin().as_raw_fd();
-            let mut termios: libc::termios = std::mem::zeroed();
-
-            if libc::tcgetattr(fd, &mut termios) != 0 {
-                return Err(io::Error::last_os_error());
-            }
-
-            // Save original settings
-            ORIG_TERMIOS = Some(termios);
-
-            // Modify for raw mode
-            termios.c_lflag &= !(libc::ECHO | libc::ICANON | libc::ISIG | libc::IEXTEN);
-            termios.c_iflag &= !(libc::IXON | libc::ICRNL | libc::BRKINT | libc::INPCK | libc::ISTRIP);
-            termios.c_oflag &= !libc::OPOST;
-            termios.c_cflag |= libc::CS8;
-
-            // Set minimum chars and timeout for read
-            // VMIN=0, VTIME=0 means non-blocking read
-            termios.c_cc[libc::VMIN] = 0;
-            termios.c_cc[libc::VTIME] = 0;
-
-            if libc::tcsetattr(fd, libc::TCSAFLUSH, &termios) != 0 {
-                return Err(io::Error::last_os_error());
-            }
-        }
-        Ok(())
+        sys::enable_raw_mode()
     }
 
     /// Disable raw mode (restore original settings)
     fn disable_raw_mode(&self) -> io::Result<()> {
-        unsafe {
-            if let Some(orig) = ORIG_TERMIOS {
-                let fd = io::stdin().as_raw_fd();
-                if libc::tcsetattr(fd, libc::TCSAFLUSH, &orig) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-            }
-        }
-        Ok(())
+        sys::disable_raw_mode()
     }
 
     /// Write raw bytes to terminal
@@ -372,8 +331,7 @@ impl Terminal {
             // If buffer is empty, read more data
             if buffer.is_empty() {
                 let mut read_buf = [0u8; 256];
-                let mut stdin = io::stdin();
-                let n = stdin.read(&mut read_buf)?;
+                let n = sys::read_input(&mut read_buf)?;
                 if n == 0 {
                     return Ok((None, vec![]));
                 }
@@ -382,7 +340,7 @@ impl Terminal {
                 // If we got just ESC, try to read more bytes (for escape sequences)
                 if buffer.len() == 1 && buffer[0] == 0x1b {
                     std::thread::sleep(std::time::Duration::from_millis(5));
-                    if let Ok(more) = stdin.read(&mut read_buf) {
+                    if let Ok(more) = sys::read_input(&mut read_buf) {
                         if more > 0 {
                             buffer.extend_from_slice(&read_buf[..more]);
                         }
@@ -777,4 +735,179 @@ pub enum CursorStyle {
     SteadyUnderline,
     BlinkingBar,
     SteadyBar,
+}
+
+/// Platform terminal access: size, raw mode, and non-blocking input.
+#[cfg(unix)]
+mod sys {
+    use std::io::{self, Read};
+    use std::os::unix::io::AsRawFd;
+
+    /// Original terminal settings for restoration
+    static mut ORIG_TERMIOS: Option<libc::termios> = None;
+
+    /// Returns (columns, rows, pixel width, pixel height)
+    pub fn size() -> Option<(u16, u16, u16, u16)> {
+        unsafe {
+            let mut ws: libc::winsize = std::mem::zeroed();
+            if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 {
+                Some((ws.ws_col, ws.ws_row, ws.ws_xpixel, ws.ws_ypixel))
+            } else {
+                None
+            }
+        }
+    }
+
+    pub fn enable_raw_mode() -> io::Result<()> {
+        unsafe {
+            let fd = io::stdin().as_raw_fd();
+            let mut termios: libc::termios = std::mem::zeroed();
+
+            if libc::tcgetattr(fd, &mut termios) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            // Save original settings
+            ORIG_TERMIOS = Some(termios);
+
+            // Modify for raw mode
+            termios.c_lflag &= !(libc::ECHO | libc::ICANON | libc::ISIG | libc::IEXTEN);
+            termios.c_iflag &= !(libc::IXON | libc::ICRNL | libc::BRKINT | libc::INPCK | libc::ISTRIP);
+            termios.c_oflag &= !libc::OPOST;
+            termios.c_cflag |= libc::CS8;
+
+            // Set minimum chars and timeout for read
+            // VMIN=0, VTIME=0 means non-blocking read
+            termios.c_cc[libc::VMIN] = 0;
+            termios.c_cc[libc::VTIME] = 0;
+
+            if libc::tcsetattr(fd, libc::TCSAFLUSH, &termios) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn disable_raw_mode() -> io::Result<()> {
+        unsafe {
+            if let Some(orig) = ORIG_TERMIOS {
+                let fd = io::stdin().as_raw_fd();
+                if libc::tcsetattr(fd, libc::TCSAFLUSH, &orig) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Read whatever input is ready; returns 0 if there is none
+    pub fn read_input(buf: &mut [u8]) -> io::Result<usize> {
+        io::stdin().read(buf)
+    }
+}
+
+/// Windows consoles speak the same ANSI protocol once virtual terminal mode is
+/// on, so keys and mouse events arrive as the sequences the parser expects.
+#[cfg(windows)]
+mod sys {
+    use std::io;
+    use std::sync::Mutex;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::Console::*;
+
+    /// Original (input, output) console modes for restoration
+    static ORIG_MODES: Mutex<Option<(u32, u32)>> = Mutex::new(None);
+
+    fn check(result: i32) -> io::Result<()> {
+        if result == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn input_handle() -> HANDLE {
+        unsafe { GetStdHandle(STD_INPUT_HANDLE) }
+    }
+
+    fn output_handle() -> HANDLE {
+        unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }
+    }
+
+    /// Returns (columns, rows, pixel width, pixel height); pixels are unknown here
+    pub fn size() -> Option<(u16, u16, u16, u16)> {
+        unsafe {
+            let mut info: CONSOLE_SCREEN_BUFFER_INFO = std::mem::zeroed();
+            if GetConsoleScreenBufferInfo(output_handle(), &mut info) == 0 {
+                return None;
+            }
+            let window = info.srWindow;
+            Some(((window.Right - window.Left + 1) as u16, (window.Bottom - window.Top + 1) as u16, 0, 0))
+        }
+    }
+
+    pub fn enable_raw_mode() -> io::Result<()> {
+        unsafe {
+            let (mut input_mode, mut output_mode) = (0, 0);
+            check(GetConsoleMode(input_handle(), &mut input_mode))?;
+            check(GetConsoleMode(output_handle(), &mut output_mode))?;
+            *ORIG_MODES.lock().unwrap() = Some((input_mode, output_mode));
+
+            // Replaces the whole mode, which turns off line input, echo, Ctrl+C
+            // handling, and the quick edit mode that would swallow mouse events
+            check(SetConsoleMode(input_handle(), ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_EXTENDED_FLAGS))?;
+            check(SetConsoleMode(
+                output_handle(),
+                ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN,
+            ))?;
+        }
+        Ok(())
+    }
+
+    pub fn disable_raw_mode() -> io::Result<()> {
+        if let Some((input_mode, output_mode)) = *ORIG_MODES.lock().unwrap() {
+            unsafe {
+                check(SetConsoleMode(input_handle(), input_mode))?;
+                check(SetConsoleMode(output_handle(), output_mode))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Read whatever input is ready; returns 0 if there is none
+    pub fn read_input(buf: &mut [u8]) -> io::Result<usize> {
+        let handle = input_handle();
+        unsafe {
+            let mut pending = 0;
+            check(GetNumberOfConsoleInputEvents(handle, &mut pending))?;
+            if pending == 0 {
+                return Ok(0);
+            }
+
+            let mut records: [INPUT_RECORD; 64] = std::mem::zeroed();
+            let mut count = 0;
+            check(ReadConsoleInputW(handle, records.as_mut_ptr(), pending.min(64), &mut count))?;
+
+            let mut units = Vec::new();
+            for record in &records[..count as usize] {
+                if u32::from(record.EventType) != u32::from(KEY_EVENT) {
+                    continue;
+                }
+                let key = record.Event.KeyEvent;
+                let unit = key.uChar.UnicodeChar;
+                if key.bKeyDown != 0 && unit != 0 {
+                    for _ in 0..key.wRepeatCount {
+                        if units.len() * 3 + 3 > buf.len() {
+                            break;
+                        }
+                        units.push(unit);
+                    }
+                }
+            }
+
+            let text = String::from_utf16_lossy(&units);
+            buf[..text.len()].copy_from_slice(text.as_bytes());
+            Ok(text.len())
+        }
+    }
 }
